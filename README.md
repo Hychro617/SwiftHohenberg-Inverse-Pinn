@@ -15,9 +15,9 @@ This adaptation extends the original formulation to study the **Swift–Hohenber
 
 ### Swift–Hohenberg Equation
 
-\[
+$$
 \frac{\partial u}{\partial t} = \varepsilon u - (1 + \nabla^2)^2 u - u^3
-\]
+$$
 
 where:
 
