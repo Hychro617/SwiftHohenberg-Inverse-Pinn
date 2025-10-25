@@ -48,12 +48,12 @@ This approach allows full control over the data and ensures reproducibility of b
 
 | Library | Version |
 |---------|---------|
-| Python | 3.9.16 |
-| TensorFlow | 2.11.0 |
-| NumPy | 1.22.1 |
-| Matplotlib | Latest |
-| SciPy | 1.9.3 |
-| OpenCV | 4.9.0.80 |
+| Python | 3.10.11 |
+| TensorFlow | 2.13.0 |
+| NumPy | 1.24.3 |
+| Matplotlib | 3.7.2 |
+| SciPy | 1.11.1 |
+| OpenCV | 4.8.1.78 |
 | Shapely | 2.0.3 |
 
 Install dependencies via:
