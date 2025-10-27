@@ -1,0 +1,165 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from collections import deque
+import cv2
+import os
+import math
+ 
+class Conditions:
+    def __init__(self):
+        pass
+ 
+    def parameters(self,val, val1, val2):
+        self.epsilon = val #np.random.uniform(0, 1)
+        self.delta = val1 #np.random.uniform(0, val1)  
+        self.g = val2 #np.random.uniform(0, val2)  
+        return self.epsilon, self.delta, self.g
+ 
+    def domain(self, Lx, Ly, resolution):
+        self.Lx, self.Ly = Lx, Ly
+        self.N = resolution
+ 
+        # FIXED: endpoint=False (boolean, not string)
+        x = np.linspace(0, Lx, self.N, endpoint=False)
+        y = np.linspace(0, Ly, self.N, endpoint=False)
+        self.dx = Lx / self.N
+        self.dy = Ly / self.N
+        self.mesh = np.meshgrid(x, y, indexing='ij')
+ 
+        # Wavenumbers
+        kx = 2 * np.pi * np.fft.fftfreq(self.N, d=self.dx)
+        ky = 2 * np.pi * np.fft.fftfreq(self.N, d=self.dy)
+        kx, ky = np.meshgrid(kx, ky, indexing='ij')
+        self.k2 = kx**2 + ky**2
+        return self.mesh
+ 
+    def initial_condition(self):
+        u = np.random.uniform(-np.sqrt(abs(self.epsilon)), np.sqrt(abs(self.epsilon)), (self.N, self.N))
+        return u
+ 
+    def linear(self):
+        L = self.epsilon - (1 - self.k2)**2
+        return L
+ 
+    def nonlinear(self, u):
+        N_hat = np.fft.fft2(-self.g * u**3 + self.delta * u**2)
+        return N_hat
+ 
+# Initialize
+cond = Conditions()
+epsilon, delta, g = cond.parameters(0.6, 0.406, 0.196)
+# L has to be an integer multiple of pi to ensure full periodicity
+cond.domain(Lx=50, Ly=50, resolution=512)
+ 
+u = cond.initial_condition()
+u_hat = np.fft.fft2(u)
+linear = cond.linear()
+ 
+# Sliding window for last few steps
+queue_size = 2
+queue = deque(maxlen=queue_size)
+ 
+# Simulation parameters
+dt = 0.1
+T = 100.0
+steps = int(T / dt)
+ 
+# Setup interactive plot
+plt.ion()
+fig, ax = plt.subplots()
+im = ax.imshow(u, cmap="RdBu", origin="lower", interpolation="bilinear",
+               extent=[0, cond.Lx, 0, cond.Ly])
+fig.colorbar(im, ax=ax)
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+ 
+#simulation loop
+finished = False
+total_steps = 0
+ 
+while not finished:
+    for i in range(steps):
+        u = np.fft.ifft2(u_hat).real
+        u_hat_new = (u_hat + dt * cond.nonlinear(u)) / (1 - dt * linear)
+ 
+        # Check for blow-up or NaN
+        if (not np.isfinite(u).all() or
+            not np.isfinite(u_hat_new).all() or
+            np.max(np.abs(u_hat_new)) > 1e8):
+            print(f"Instability detected at step {total_steps + i}, stopping simulation.")
+            finished = True
+            break
+ 
+        # Add the last stable one to the queue
+        queue.append({'u': np.copy(u), 'u_hat': np.copy(u_hat_new)})
+ 
+        # Update for next iteration
+        u_hat = u_hat_new
+ 
+        # Update live plot every 50 steps
+        if i % 50 == 0:
+            im.set_data(u)
+            im.set_clim(u.min(), u.max())
+            ax.set_title(f"t = {(total_steps + i)*dt:.2f}, ε = {epsilon:.3f}, δ = {delta:.3f}")
+            plt.pause(0.01)
+ 
+    total_steps += steps
+    T += 10  # Increase simulation time window
+ 
+plt.ioff()
+plt.show()
+ 
+# Plot the last stable time step
+last_good = queue[-1]  # last stable step
+final_u = np.fft.ifft2(last_good['u_hat']).real
+filename_base = f"pattern_eps{epsilon:.3f}_delta{delta:.3f}_gamma{g:.3f}"
+ 
+# SET THE CORRECT FILEPATH
+base_filepath = r'C:\Users\Zach Mollatt\Documents\IPTP\IPTP-paper-code\Images'
+ 
+# Create directory if it doesn't exist
+os.makedirs(base_filepath, exist_ok=True)
+ 
+# setting up the image for PINN input
+print("Preparing PINN input image...")
+pinn_size = 512
+final_u_resized = cv2.resize(final_u, (pinn_size, pinn_size), interpolation=cv2.INTER_AREA)
+ 
+# Normalize to 0-1 range (required by your PINN)
+final_u_normalized = 2 * (final_u_resized - final_u_resized.min()) / (final_u_resized.max() - final_u_resized.min()) - 1
+ 
+# Save as numpy array for direct PINN loading
+npy_filepath = os.path.join(base_filepath, f"{filename_base}_PINN.npy")
+np.save(npy_filepath, final_u_normalized)
+ 
+# Also save as image file
+plt.figure(figsize=(6.4, 6.4))
+plt.imshow(final_u_normalized, cmap="RdBu", origin="lower", interpolation="bilinear")
+plt.axis('off')
+plt.tight_layout(pad=0)
+png_filepath = os.path.join(base_filepath, f"{filename_base}_PINN.png")
+plt.savefig(png_filepath,
+            bbox_inches='tight',
+            pad_inches=0,
+            dpi=10)  
+plt.close()
+ 
+#annotated image with parameters
+plt.figure(figsize=(10, 8))
+plt.imshow(final_u, cmap="RdBu", origin="lower", interpolation="bilinear",
+           extent=[0, cond.Lx, 0, cond.Ly])
+plt.colorbar(label='Amplitude')
+plt.xlabel('x')
+plt.ylabel('y')
+plt.title(f"Swift-Hohenberg Pattern\nε = {epsilon:.3f}, δ = {delta:.3f}, γ = {g:.3f}")
+plt.tight_layout()
+annotated_filepath = os.path.join(base_filepath, f"{filename_base}_annotated.png")
+plt.savefig(annotated_filepath, dpi=150)
+plt.close()
+ 
+print(f"Saved three files to: {base_filepath}")
+print(f"1. {filename_base}_PINN.npy - Array data (64×64) for direct PINN loading")
+print(f"2. {filename_base}_PINN.png - Image version (64×64) for PINN")
+print(f"3. {filename_base}_annotated.png - Full resolution annotated version")
+print(f"PINN image size: {pinn_size}×{pinn_size} pixels (optimal for training)")
+print(f"Physical domain: Lx = Ly = {cond.Lx:.2f}")
