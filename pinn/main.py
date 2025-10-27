@@ -25,7 +25,7 @@ MODEL_CONFIG = {
     'n': n,
     'noise': 0,
     'learning_rates': [1e-5, 2e-3],
-    'length_app': 40000, # Initial data-fitting phase length
+    'length_app': 1000, # Initial data-fitting phase length
     'length_total': 600000,
     'batchsize': 1024,
     'step_size': 2000,
