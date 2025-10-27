@@ -4,26 +4,88 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
 import tensorflow as tf
+from scipy.integrate import odeint
 
-class TrainingManager:
+
+#Plotting each of the parameters that are being trained, here it is only epsilon
+def plot_parameters(parameters, true_values, save_path):
+    os.makedirs(save_path, exist_ok=True)
+    for i, val in enumerate(true_values):
+        plt.figure()
+        plt.plot(parameters[i])
+        plt.axhline(val, linestyle=":")
+        plt.yscale("log")
+        plt.xlabel("Iterations")
+        plt.ylabel(f"D_{i}")
+        plt.savefig(f"{save_path}/D_{i}.png")
+        plt.close()
+
+#plotting the losses of u and losses of pde in a plot
+
+def plot_losses(loss_u, loss_pde_u, save_path):
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Log scale
+    plt.figure()
+    plt.plot(loss_u, label="loss_u")
+    plt.plot(loss_pde_u, label="loss_pde_u")
+    plt.yscale("log")
+    plt.xlabel("Iterations")
+    plt.ylabel("Losses")
+    plt.legend()
+    plt.savefig(f"{save_path}/loss_log.png")
+    plt.close()
+    
+    # Linear scale
+    plt.figure()
+    plt.plot(loss_u, label="loss_u")
+    plt.plot(loss_pde_u, label="loss_pde_u")
+    plt.xlabel("Iterations")
+    plt.ylabel("Losses")
+    plt.legend()
+    plt.savefig(f"{save_path}/loss_linear.png")
+    plt.close()
+
+#Plots the whole PINN output
+def plot_field(u_field, Lx, Ly, cmap='RdBu', save_path=None, filename=None):
+    extent = [0, Lx, 0, Ly]
+    plt.figure()
+    
+    # Use 0-1 normalization (like your good plot)
+    u_normalized = (u_field - u_field.min()) / (u_field.max() - u_field.min())
+    
+    plt.imshow(u_normalized, extent=extent, origin='lower', cmap='RdBu', 
+               interpolation='bilinear')  # 0 to 1 range
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.colorbar(ticks=[0, 0.25, 0.5, 0.75, 1])
+    
+    if save_path and filename:
+        os.makedirs(save_path, exist_ok=True)
+        plt.savefig(f"{save_path}/{filename}.png")
+        plt.savefig(f"{save_path}/{filename}.pdf")
+    plt.close()
+
+# Saving the files
+def save_pickle(data, save_path, filename):
+    os.makedirs(save_path, exist_ok=True)
+    with open(f"{save_path}/{filename}.pkl", "wb") as f:
+        pickle.dump(data, f)
+
+#Full training class
+class PINNPostProcessor:
     def __init__(self, model_class, config):
         self.model_class = model_class
         self.config = config
-        self.setup_directories()
-        
-    def setup_directories(self):
-        try:
-            self.path_name = f"paper_images/{self.config['model_name']}_no_br/noise_level_{self.config['noise']}"
-            os.makedirs(self.path_name)
-        except FileExistsError:
-            print("Directory already exists, possible rewriting")
-            pass
+        self.model = None
+        self.path_name = f"paper_images/{self.config['model_name']}_no_br/noise_level_{self.config['noise']}"
+        os.makedirs(self.path_name, exist_ok=True)
     
-    def train_model(self):
-        self.PINN_model = self.model_class(
+    def train(self):
+        self.model = self.model_class(
             self.config['nodes'],
             self.config['xrange'],
-            self.config['yrange'], 
+            self.config['yrange'],
             self.config['learning_rates'][0],
             self.config['learning_rates'][1],
             self.config['u_n'],
@@ -31,122 +93,39 @@ class TrainingManager:
             self.config['tol'],
             self.config['length_app'],
             self.config['batchsize'],
-            self.config['sigma2'],
+            self.config['sigma2']
         )
-        self.PINN_model.train(self.config['length_total'], self.config['step_size'])
-        return self.PINN_model
+        self.model.train(self.config['length_total'], self.config['step_size'])
     
-    def plot_results(self, c_original):
-        os.makedirs(self.path_name, exist_ok=True)
+    #Literally just plotting all the results we got
+    def plot_results(self, true_params):
+        plot_parameters(self.model.parameters, true_params, self.path_name)
+        plot_losses(self.model.loss_u_array, self.model.loss_pde_u_array, self.path_name)
         
-        # Plot parameters
-        for i, par in enumerate(c_original):
-            self._plot_parameter(i, par)
-        
-        # Plot losses
-        self._plot_losses()
-        
-        # Plot reconstructed pattern
-        self._plot_reconstructed_pattern()
-        
-        # Save arrays
-        self._save_data_arrays()
-    
-    def _plot_parameter(self, idx, true_value):
-        plt.figure()
-        plt.plot(self.PINN_model.parameters[idx])
-        plt.yscale("log")
-        plt.axhline(y=true_value, linestyle=":")
-        plt.xlabel("Iterations")
-        plt.ylabel(f"D_{idx}")
-        plt.savefig(f"{self.path_name}/d{idx}.png")
-        plt.savefig(f"{self.path_name}/d{idx}.pdf")
-        plt.close()
-    
-    def _plot_losses(self):
-        # Log scale losses
-        plt.figure()
-        plt.plot(self.PINN_model.loss_u_array, label="loss_u")
-        plt.plot(self.PINN_model.loss_pde_u_array, label="loss_pde_u")
-        plt.yscale("log")
-        plt.xlabel("Iterations")
-        plt.ylabel("Losses")
-        plt.legend()
-        plt.savefig(f"{self.path_name}/loss_plot_log.png")
-        plt.savefig(f"{self.path_name}/loss_plot_log.pdf")
-        plt.close()
-        
-        # Linear scale losses
-        plt.figure()
-        plt.plot(self.PINN_model.loss_u_array, label="loss_u")
-        plt.plot(self.PINN_model.loss_pde_u_array, label="loss_pde_u")
-        plt.xlabel("Iterations")
-        plt.ylabel("Losses")
-        plt.legend()
-        plt.savefig(f"{self.path_name}/loss_plot.png")
-        plt.savefig(f"{self.path_name}/loss_plot.pdf")
-        plt.close()
-    
-    def _plot_reconstructed_pattern(self):
+        # Reconstructed field
         X, Y = np.meshgrid(self.config['xrange'], self.config['yrange'])
-        X, Y = tf.Variable(X.flatten()[:, None], dtype=tf.float32), tf.Variable(
-            Y.flatten()[:, None], dtype=tf.float32
-        )
-        plt.imshow(
-            np.reshape(self.PINN_model.model_u(tf.concat([X, Y], 1)), (self.config['n'], self.config['n'])),
-            cmap=self.config.get('cmap', cm.Spectral)
-        )
-        plt.savefig(f"{self.path_name}/u_approx_pinn.png")
-        plt.savefig(f"{self.path_name}/u_approx_pinn.pdf")
-        plt.close()
+        XY = tf.Variable(np.column_stack([X.flatten(), Y.flatten()]), dtype=tf.float32)
+        u_pred = np.reshape(self.model.model_u(XY), (self.config['n'], self.config['n']))
+        plot_field(u_pred, self.config['Lx'], self.config['Ly'], save_path=self.path_name, filename='u_approx_pinn')
     
-    def _save_data_arrays(self):
-        filename = f"{self.path_name}/saved_param_arrays"
-        with open(filename, "wb") as outfile:
-            pickle.dump(self.PINN_model.parameters, outfile)
-        
-        filename = f"{self.path_name}/saved_losses_arrays"
-        with open(filename, "wb") as outfile:
-            pickle.dump([
-                self.PINN_model.loss_u_array,
-                self.PINN_model.loss_pde_u_array,
-            ], outfile)
-    
-    def simulate_new_pattern(self, step_forward, modelfun=True):
-        c_new = self.PINN_model.final_parameters
+    def simulate_pattern(self, step_forward, modelfun=True):
         n = self.config['n']
-        
         u0 = 0.1 * np.ones(n**2)
-        perturbation1 = np.random.normal(0, 0.01, (n**2))
-        y0 = u0 + perturbation1
-        tlen = 10000
-        t = np.linspace(0, tlen)
+        perturb = np.random.normal(0, 0.01, n**2)
+        y0 = u0 + perturb
+        t = np.linspace(0, 10000)
+        c_new = self.model.final_parameters
         
-        from scipy.integrate import odeint
         if modelfun:
-            solb = odeint(step_forward, y0, t, args=(c_new, self.config['dx']))
+            sol = odeint(step_forward, y0, t, args=(c_new, self.config['dx']))
         else:
-            solb = odeint(step_forward, y0, t, args=(c_new, self.config['dx'], modelfun))
+            sol = odeint(step_forward, y0, t, args=(c_new, self.config['dx'], modelfun))
         
-        u_tp_new = np.reshape(solb[-1], (n, n))
-        plt.imshow(u_tp_new, cmap=self.config.get('cmap', cm.Spectral))
-        plt.savefig(f"{self.path_name}/u_approx.png")
-        plt.savefig(f"{self.path_name}/u_approx.pdf")
-        plt.close()
-        
-        return u_tp_new
+        u_final = np.reshape(sol[-1], (n, n))
+        plot_field(u_final, self.config['Lx'], self.config['Ly'], save_path=self.path_name, filename='u_simulated')
+        return u_final
     
-    def save_results(self, u_tp_new, u_original, c_original):
-        MSE_u = np.mean((u_tp_new - u_original) ** 2)
-        relative_error = (self.PINN_model.final_parameters[:3] - c_original) / c_original
-        
-        objects_to_save = [
-            self.PINN_model.final_parameters,
-            MSE_u,
-            relative_error,
-            u_tp_new,
-        ]
-        
-        filename = f"{self.path_name}/saved_matrices"
-        with open(filename, "wb") as outfile:
-            pickle.dump(objects_to_save, outfile)
+    def save_results(self, u_final, u_true, true_params):
+        mse = np.mean((u_final - u_true)**2)
+        rel_error = (self.model.final_parameters[:3] - true_params)/true_params
+        save_pickle([self.model.final_parameters, mse, rel_error, u_final], self.path_name, "results")

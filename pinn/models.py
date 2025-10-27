@@ -240,16 +240,12 @@ class RBF_PINNs(tf.keras.layers.Layer):
                                 self.optimizer.lr,
                             )
                         )
-                    if self.iterations % 10000 == 0:
-                        plt.imshow(
-                            np.reshape(
-                                self.model_u(tf.concat([self.X, self.Y], 1)),
-                                (self.n, self.n),
-                            ),
-                            cmap=plt.cm.Spectral,
-                        )
-                        plt.colorbar()
+                    if self.iterations % 2000 == 0:
+                        u_pred = np.reshape(self.model_u(tf.concat([self.X, self.Y], 1)), (self.n, self.n))
+                        plt.imshow(u_pred, cmap=plt.cm.RdBu)
+                        plt.colorbar(label = 'Amplitude')
                         plt.show()
+                    
                     if self.iterations == max_iterations:
                         self.iterations = -2
                         break
@@ -321,17 +317,12 @@ class RBF_PINNs(tf.keras.layers.Layer):
                             )
                         )
                     if self.iterations % 2000 == 0:
-                        plt.imshow(
-                            np.reshape(
-                                self.model_u(tf.concat([self.X, self.Y], 1)),
-                                (self.n, self.n),
-                            ),
-                            cmap=plt.cm.Spectral,
-                        )
-                        plt.colorbar()
+                        u_pred = np.reshape(self.model_u(tf.concat([self.X, self.Y], 1)), (self.n, self.n))
+                        plt.imshow(u_pred, cmap=plt.cm.RdBu)
+                        plt.colorbar(label = 'Amplitude')
                         plt.show()
                     self.iterations += 1
-                    if loss_u < self.tol:
+                    if loss_u < self.tol:   
                         break
             self.epochs += 1
             
