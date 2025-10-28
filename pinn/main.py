@@ -45,9 +45,7 @@ def load_pattern_array(array_path: str, n: int = None):
         logger.error(f"Could not load array: {array_path}")
         raise
 
-    # --- NO NORMALIZATION - Use raw data ---
     u_tp = u_data.astype(float)
-    # --- END NO NORMALIZATION ---
 
     if n is not None and u_tp.shape[0] != n:
         original_shape = u_tp.shape
@@ -68,7 +66,7 @@ def main():
 
     x_phys, y_phys, dx = get_physical_grid(L_DOMAIN, n)
 
-    data_path = Path("C:/Users/mafet/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
+    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
 
     try:
         u_tp = load_pattern_array(data_path, n=n)
