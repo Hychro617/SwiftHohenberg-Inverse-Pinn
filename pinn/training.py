@@ -7,42 +7,80 @@ import tensorflow as tf
 from scipy.integrate import odeint
 
 
-#Plotting each of the parameters that are being trained, here it is only epsilon
+#Plotting each of the parameters that are being trained
 def plot_parameters(parameters, true_values, save_path):
     os.makedirs(save_path, exist_ok=True)
+    
+    param_names = ["epsilon", "delta", "gamma"]
+    
     for i, val in enumerate(true_values):
         plt.figure()
-        plt.plot(parameters[i])
-        plt.axhline(val, linestyle=":")
-        plt.yscale("log")
-        plt.xlabel("Iterations")
-        plt.ylabel(f"D_{i}")
-        plt.savefig(f"{save_path}/D_{i}.png")
+        
+        param_data = parameters[i]
+        true_val = true_values[i]
+        
+        plt.plot(param_data, label=f'Predicted {param_names[i]}')
+        plt.axhline(true_val, linestyle=":", color='r', label=f'True Value ({true_val})')
+        
+        # --- *** NEW AXIS FIX *** ---
+        data_min = np.min(param_data)
+        data_max = np.max(param_data)
+        
+        if data_min == data_max:
+            # It's a constant plot (delta or gamma)
+            padding = 0.1 * abs(true_val) # 10% padding
+            if padding == 0: padding = 0.1 # Handle case where val is 0
+            plt.ylim(true_val - padding, true_val + padding)
+        else:
+            # It's a converging plot (epsilon)
+            padding = 0.1 * (data_max - data_min) # 10% padding
+            if padding == 0: padding = 0.1
+            plt.ylim(data_min - padding, data_max + padding)
+        # --- *** END FIX *** ---
+            
+        plt.xlabel("Iterations (x50)") # Since we log every 50 steps
+        plt.ylabel(f"Parameter Value")
+        plt.title(f"Convergence of {param_names[i]}") # Added Title
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.6)
+        
+        # Add tight_layout to prevent cropping
+        plt.tight_layout() 
+        plt.savefig(f"{save_path}/{param_names[i]}.png")
         plt.close()
 
 #plotting the losses of u and losses of pde in a plot
-
 def plot_losses(loss_u, loss_pde_u, save_path):
     os.makedirs(save_path, exist_ok=True)
     
     # Log scale
     plt.figure()
-    plt.plot(loss_u, label="loss_u")
-    plt.plot(loss_pde_u, label="loss_pde_u")
+    plt.plot(loss_u, label="L_Data (loss_u)")
+    plt.plot(loss_pde_u, label="L_PDE (loss_pde_u)")
     plt.yscale("log")
-    plt.xlabel("Iterations")
-    plt.ylabel("Losses")
+    plt.xlabel("Iterations (x50)")
+    plt.ylabel("Loss (Log Scale)")
+    plt.title("Loss Convergence (Log Scale)") # Added Title
     plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    
+    # Add tight_layout to prevent cropping
+    plt.tight_layout()
     plt.savefig(f"{save_path}/loss_log.png")
     plt.close()
     
     # Linear scale
     plt.figure()
-    plt.plot(loss_u, label="loss_u")
-    plt.plot(loss_pde_u, label="loss_pde_u")
-    plt.xlabel("Iterations")
-    plt.ylabel("Losses")
+    plt.plot(loss_u, label="L_Data (loss_u)")
+    plt.plot(loss_pde_u, label="L_PDE (loss_pde_u)")
+    plt.xlabel("Iterations (x50)")
+    plt.ylabel("Loss (Linear Scale)")
+    plt.title("Loss Convergence (Linear Scale)") # Added Title
     plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    
+    # Add tight_layout to prevent cropping
+    plt.tight_layout()
     plt.savefig(f"{save_path}/loss_linear.png")
     plt.close()
 
@@ -54,14 +92,17 @@ def plot_field(u_field, Lx, Ly, cmap='RdBu', save_path=None, filename=None):
     # Use 0-1 normalization (like your good plot)
     u_normalized = (u_field - u_field.min()) / (u_field.max() - u_field.min())
     
-    plt.imshow(u_normalized, extent=extent, origin='lower', cmap='RdBu', 
+    plt.imshow(u_normalized, extent=extent, origin='lower', cmap=cmap, 
                interpolation='bilinear')  # 0 to 1 range
     plt.xlabel("x")
     plt.ylabel("y")
+    plt.title(f"Generated Pattern: {filename}") # Added Title
     plt.colorbar(ticks=[0, 0.25, 0.5, 0.75, 1])
     
     if save_path and filename:
         os.makedirs(save_path, exist_ok=True)
+        # Add tight_layout to prevent cropping
+        plt.tight_layout()
         plt.savefig(f"{save_path}/{filename}.png")
         plt.savefig(f"{save_path}/{filename}.pdf")
     plt.close()
@@ -105,8 +146,19 @@ class PINNPostProcessor:
         # Reconstructed field
         X, Y = np.meshgrid(self.config['xrange'], self.config['yrange'])
         XY = tf.Variable(np.column_stack([X.flatten(), Y.flatten()]), dtype=tf.float32)
-        u_pred = np.reshape(self.model.model_u(XY), (self.config['n'], self.config['n']))
-        plot_field(u_pred, self.config['Lx'], self.config['Ly'], save_path=self.path_name, filename='u_approx_pinn')
+
+        # *** --- START OF FIX (from v1.1) --- ***
+        # 1. Call the correct model, 'model_up'
+        model_output = self.model.model_up(XY, training=False)
+        
+        # 2. Split the output to get only the first column (u_pred)
+        u_pred_flat, _ = tf.split(model_output, 2, axis=1)
+        
+        # 3. Reshape the u_pred tensor for plotting
+        u_pred = np.reshape(u_pred_flat.numpy(), (self.config['n'], self.config['n']))
+        # *** --- END OF FIX --- ***
+
+        plot_field(u_pred, self.config['Lx'], self.config['Ly'], cmap=self.config['cmap'], save_path=self.path_name, filename='u_approx_pinn')
     
     def simulate_pattern(self, step_forward, modelfun=True):
         n = self.config['n']
@@ -116,13 +168,13 @@ class PINNPostProcessor:
         t = np.linspace(0, 10000)
         c_new = self.model.final_parameters
         
-        if modelfun:
-            sol = odeint(step_forward, y0, t, args=(c_new, self.config['dx']))
-        else:
-            sol = odeint(step_forward, y0, t, args=(c_new, self.config['dx'], modelfun))
+        # *** --- START OF FIX (from v1.1) --- ***
+        # Removed the faulty if/else block.
+        sol = odeint(step_forward, y0, t, args=(c_new, self.config['dx'], modelfun))
+        # *** --- END OF FIX --- ***
         
         u_final = np.reshape(sol[-1], (n, n))
-        plot_field(u_final, self.config['Lx'], self.config['Ly'], save_path=self.path_name, filename='u_simulated')
+        plot_field(u_final, self.config['Lx'], self.config['Ly'], cmap=self.config['cmap'], save_path=self.path_name, filename='u_simulated')
         return u_final
     
     def save_results(self, u_final, u_true, true_params):

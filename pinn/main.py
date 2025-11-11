@@ -25,8 +25,8 @@ MODEL_CONFIG = {
     'n': n,
     'noise': 0,
     'learning_rates': [1e-5, 2e-3],
-    'length_app': 1000, # Initial data-fitting phase length
-    'length_total': 600000,
+    'length_app': 15000, # Initial data-fitting phase length
+    'length_total': 85000,
     'batchsize': 1024,
     'step_size': 2000,
     'model_name': "image_based_experiment_n100_raw", # Updated model name
@@ -66,7 +66,7 @@ def main():
 
     x_phys, y_phys, dx = get_physical_grid(L_DOMAIN, n)
 
-    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
+    data_path = Path("C:/Users/mafet/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
 
     try:
         u_tp = load_pattern_array(data_path, n=n)
@@ -95,7 +95,7 @@ def main():
     config.update({
         'dx': dx,
         'xrange': x_phys,
-        'yrange': y_phys,
+        'yrange': y_phys, 
         'u_n': u_tp, # Pass the raw data
         'Lx': L_DOMAIN,
         'Ly': L_DOMAIN,
