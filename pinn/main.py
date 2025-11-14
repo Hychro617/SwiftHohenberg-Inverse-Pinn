@@ -3,15 +3,25 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2  # Still needed for resizing
-
+import time
 from models import RBF_PINNs # Assumes you are using the corresponding models.py
 from training import PINNPostProcessor
+import tensorflow as tf
+import os
+import random
+
+SEED = 42
+os.environ['PYTHONHASHSEED'] = str(SEED)
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-L_DOMAIN = 50        # Physical domain size
-n = 100              # Grid resolution (100x100)
+L_DOMAIN = 16*np.pi      # Physical domain size
+n = 64              # Grid resolution (100x100)
 dx = L_DOMAIN / (n - 1) # Grid spacing
 
 MODEL_CONFIG = {
@@ -56,6 +66,7 @@ def get_physical_grid(L_DOMAIN: float, n: int):
     return x, y, dx
 
 def main():
+    start = time.time()
     logger.info("Starting Swift-Hohenberg PINN training (n=100, raw data)")
 
     x_phys, y_phys, dx = get_physical_grid(L_DOMAIN, n)
@@ -99,10 +110,15 @@ def main():
     logger.info("Initializing PINN trainer")
     trainer = PINNPostProcessor(RBF_PINNs, config)
 
+    
     logger.info("Starting model training")
     trainer.train() # This will run the training loop in models.py
 
-    logger.info("Generating plots and saving results")
+    end = time.time()
+    elapsed = end - start
+    logger.info(f"Total execution time: {elapsed:.2f} seconds")
+    
+    logger.info("Generating plots and saving results") 
     trainer.plot_results(C_ORIGINAL)
 
     # Ensure pde_utils is available if this block is needed
@@ -117,4 +133,7 @@ def main():
     logger.info("Training and analysis complete")
 
 if __name__ == "__main__":
+    
     main()
+    
+    

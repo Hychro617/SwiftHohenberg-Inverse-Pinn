@@ -36,7 +36,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
 
         # --- 3-PHASE TIMELINE ---
         self.threshold_p1 = threshold_ep          
-        self.threshold_p2 = threshold_ep + 15000
+        self.threshold_p2 = threshold_ep + 25000
         
         # --- PRINCIPLED ANNEALING PARAMETERS ---
         self.annealing_step = 4000
@@ -242,6 +242,8 @@ class RBF_PINNs(tf.keras.layers.Layer):
                 # --- PHASE 2: CONSTRAINT-FIT ---
                 if self.iterations == self.threshold_p1: 
                     tf.print("--- SWITCHING TO PHASE 2 (CONSTRAINT-FIT) ---")
+                self.weight_data = tf.Variable(80.0, dtype=tf.float32, trainable=False)
+                self.weight_pde1 = tf.Variable(20.0, dtype=tf.float32, trainable=False)
                 
                 x_batch, y_batch, u_batch = self.create_batch(self.batchsize)
                 total_loss, loss_u, loss_pde1, loss_pde2_ph = self.train_step_p2(x_batch, y_batch, u_batch)
@@ -277,7 +279,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
                         
                         if is_stable and is_converging:
                             # ε is stable - we can safely increase PDE2 influence
-                            new_pde2 = tf.minimum(self.weight_pde2 * 1.1, 15.0)
+                            new_pde2 = tf.minimum(self.weight_pde2 * 1.15, 15.0)
                             new_data = tf.maximum(self.weight_data * 0.98, 20.0)
                             tf.print(f"✓ ε STABLE (std={eps_std:.4f}, trend={eps_trend:.4f}), increasing PDE2 weight")
                             

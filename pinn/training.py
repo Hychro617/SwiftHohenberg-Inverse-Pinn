@@ -92,7 +92,7 @@ def plot_field(u_field, Lx, Ly, cmap='RdBu', save_path=None, filename=None):
     plt.xlabel("x")
     plt.ylabel("y")
     plt.title(f"Generated Pattern: {filename}") # Added Title
-    plt.colorbar(ticks=[0, 0.25, 0.5, 0.75, 1])
+    plt.colorbar()
     
     if save_path and filename:
         os.makedirs(save_path, exist_ok=True)
