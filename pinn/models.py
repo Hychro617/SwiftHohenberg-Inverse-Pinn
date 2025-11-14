@@ -20,7 +20,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
         threshold_ep,   # Iteration count for Phase 1
         batchsize,      # Batch size
         sigma2=2,       # RBF layer parameter
-        target_data_pde_ratio=15.0,  # *** Stop annealing at this Data:PDE ratio ***
+        target_data_pde_ratio=35,  # *** Stop annealing at this Data:PDE ratio ***
     ):
         super().__init__()
         
@@ -40,7 +40,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
         
         # --- PRINCIPLED ANNEALING PARAMETERS ---
         self.annealing_step = 4000
-        self.pde2_growth_rate = 1.2  # More conservative
+        self.pde2_growth_rate = 1.1  # More conservative
         self.data_decay_rate = 0.98   # More conservative
         
         # *** PRINCIPLED STOPPING CONDITION ***
@@ -133,7 +133,6 @@ class RBF_PINNs(tf.keras.layers.Layer):
             p_xx = tape_outer.gradient(p_x, x); p_yy = tape_outer.gradient(p_y, y)
         
             u_xx = tf.zeros_like(x) if u_xx is None else u_xx
-            u_y = tf.zeros_like(y) if u_y is None else u_y 
             u_yy = tf.zeros_like(y) if u_yy is None else u_yy
             p_xx = tf.zeros_like(x) if p_xx is None else p_xx
             p_yy = tf.zeros_like(y) if p_yy is None else p_yy
@@ -265,27 +264,53 @@ class RBF_PINNs(tf.keras.layers.Layer):
                     
                     current_ratio = self.weight_data / self.weight_pde2
                     
-                    # Stop when we reach target ratio
-                    if current_ratio <= self.target_data_pde_ratio:
-                        tf.print(f"--- ANNEALING STOPPED at Iteration {self.iterations} ---")
-                        tf.print(f"Reached target Data:PDE ratio: {current_ratio:.1f}:1")
-                        tf.print(f"*** SWITCHING ε LR FROM {self.eps_lr.numpy():.2e} TO {self.refinement_eps_lr:.2e} ***")
-                        self.annealing_active = False
-                        self.refinement_phase = True
-                        # *** INSTANT LR REDUCTION TO 1e-6 ***
-                        self.eps_lr.assign(self.refinement_eps_lr)
-                        self.optimizer_eps.learning_rate = self.eps_lr
+                    # Check ε stability
+                    if len(self._epsilon_array) >= 50:  # Need enough history
+                        recent_eps = self._epsilon_array[-50:]  # Last 50 values
+                        eps_std = np.std(recent_eps)
+                        eps_trend = np.mean(recent_eps[-10:]) - np.mean(recent_eps[:10])  # Recent trend
+                        
+                        # Determine stability
+                        is_stable = eps_std < 0.01  # Low oscillation
+                        is_converging = abs(eps_trend) < 0.005  # Not drifting
+                        is_near_truth = abs(np.mean(recent_eps) - 0.6) < 0.05  # Close to true value
+                        
+                        if is_stable and is_converging:
+                            # ε is stable - we can safely increase PDE2 influence
+                            new_pde2 = tf.minimum(self.weight_pde2 * 1.1, 15.0)
+                            new_data = tf.maximum(self.weight_data * 0.98, 20.0)
+                            tf.print(f"✓ ε STABLE (std={eps_std:.4f}, trend={eps_trend:.4f}), increasing PDE2 weight")
+                            
+                        else:
+                            # ε is unstable - maintain current weights
+                            new_pde2 = self.weight_pde2
+                            new_data = self.weight_data
+                            reason = []
+                            if not is_stable: reason.append(f"high-std({eps_std:.4f})")
+                            if not is_converging: reason.append(f"drifting({eps_trend:.4f})") 
+                            if not is_near_truth: reason.append(f"far-from-truth")
+                            tf.print(f"✗ ε UNSTABLE ({', '.join(reason)}), maintaining weights")
+                        
+                        # Check if we should stop annealing
+                        if current_ratio <= self.target_data_pde_ratio:
+                            tf.print(f"--- ANNEALING STOPPED: Reached target ratio {current_ratio:.1f}:1 ---")
+                            tf.print(f"*** SWITCHING ε LR FROM {self.eps_lr.numpy():.2e} TO {self.refinement_eps_lr:.2e} ***")
+                            self.annealing_active = False
+                            self.refinement_phase = True
+                            self.eps_lr.assign(self.refinement_eps_lr)
+                            self.optimizer_eps.learning_rate = self.eps_lr
+                        else:
+                            self.weight_pde2.assign(new_pde2)
+                            self.weight_data.assign(new_data)
+                            tf.print(f"New weights: Data={self.weight_data.numpy():.1f}, PDE2={self.weight_pde2.numpy():.1f}, Ratio={current_ratio:.1f}:1")
+                            
                     else:
-                        # Conservative annealing toward target ratio
-                        tf.print(f"--- Annealing toward {self.target_data_pde_ratio}:1 ratio ---")
-                        
-                        new_pde2 = tf.minimum(self.weight_pde2 * self.pde2_growth_rate, 50.0)
-                        new_data = tf.maximum(self.weight_data * self.data_decay_rate, 50.0)
-                        
+                        # Not enough history yet - use conservative default
+                        new_pde2 = tf.minimum(self.weight_pde2 * 1.05, 8.0)  # Very conservative
+                        new_data = tf.maximum(self.weight_data * 0.99, 40.0)
                         self.weight_pde2.assign(new_pde2)
                         self.weight_data.assign(new_data)
-                        
-                        tf.print(f"Weights: Data={self.weight_data.numpy():.1f}, PDE2={self.weight_pde2.numpy():.1f}, Ratio={current_ratio:.1f}:1")
+                        tf.print(f"Initial annealing: Data={self.weight_data.numpy():.1f}, PDE2={self.weight_pde2.numpy():.1f}")
 
                 x_batch, y_batch, u_batch = self.create_batch(self.batchsize)
                 total_loss, loss_u, loss_pde1, loss_pde2 = self.train_step_p3(x_batch, y_batch, u_batch)
@@ -357,7 +382,8 @@ class RBF_PINNs(tf.keras.layers.Layer):
         if self.iterations % 200 == 0:
             tf.print(f"{phase_name} - It: {self.iterations}, Loss: {loss.numpy():.3e}, L_Data: {loss_u.numpy():.3e}, "
                      f"L_PDE1: {loss_pde1.numpy():.3e}, L_PDE2: {loss_pde2.numpy():.3e}, "
-                     f"ε: {self.epsilon.numpy()[0]:.6f}, ε_LR: {current_eps_lr:.2e}")
+                     f"ε: {self.epsilon.numpy()[0]:.6f}, ε_LR: {current_eps_lr:.2e}," f" Data Weight: {self.weight_data.numpy()}," 
+                     f" PDE 1 Weight: {self.weight_pde1.numpy()}, PDE 2 Weight: {self.weight_pde2.numpy()}")
             
     # --- Property methods ---
     
@@ -366,8 +392,12 @@ class RBF_PINNs(tf.keras.layers.Layer):
         return [self._epsilon_array, self._delta_array, self._gamma_array, self._u_m_array, self._u_s_array, self._eps_lr_array]
 
     @property 
-    def loss_pde_u_array(self):
-        return [a + b for a, b in zip(self._loss_pde1_array, self._loss_pde2_array)]
+    def loss_pde_1_array(self):
+        return self._loss_pde1_array
+    
+    @property
+    def loss_pde_2_array(self):
+        return self._loss_pde2_array
 
     @property
     def loss_u_array(self):

@@ -50,49 +50,44 @@ def plot_parameters(parameters, true_values, save_path):
         plt.close()
 
 #plotting the losses of u and losses of pde in a plot
-def plot_losses(loss_u, loss_pde_u, save_path):
+def plot_losses(loss_u, loss_pde1, loss_pde2, save_path):
     os.makedirs(save_path, exist_ok=True)
-    
+
     # Log scale
     plt.figure()
     plt.plot(loss_u, label="L_Data (loss_u)")
-    plt.plot(loss_pde_u, label="L_PDE (loss_pde_u)")
+    plt.plot(loss_pde1, label="Auxillary Equation")
+    plt.plot(loss_pde2, label="Simplified Swift-Hohenberg Equation")
     plt.yscale("log")
     plt.xlabel("Iterations (x50)")
     plt.ylabel("Loss (Log Scale)")
-    plt.title("Loss Convergence (Log Scale)") # Added Title
+    plt.title("Loss Convergence (Log Scale)")
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
-    
-    # Add tight_layout to prevent cropping
     plt.tight_layout()
     plt.savefig(f"{save_path}/loss_log.png")
     plt.close()
-    
+
     # Linear scale
     plt.figure()
     plt.plot(loss_u, label="L_Data (loss_u)")
-    plt.plot(loss_pde_u, label="L_PDE (loss_pde_u)")
+    plt.plot(loss_pde1, label="Auxillary Equation")
+    plt.plot(loss_pde2, label="Simplified Swift-Hohenberg Equation")
     plt.xlabel("Iterations (x50)")
     plt.ylabel("Loss (Linear Scale)")
-    plt.title("Loss Convergence (Linear Scale)") # Added Title
+    plt.title("Loss Convergence (Linear Scale)")
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
-    
-    # Add tight_layout to prevent cropping
     plt.tight_layout()
     plt.savefig(f"{save_path}/loss_linear.png")
     plt.close()
+
 
 #Plots the whole PINN output
 def plot_field(u_field, Lx, Ly, cmap='RdBu', save_path=None, filename=None):
     extent = [0, Lx, 0, Ly]
     plt.figure()
-    
-    # Use 0-1 normalization (like your good plot)
-    u_normalized = (u_field - u_field.min()) / (u_field.max() - u_field.min())
-    
-    plt.imshow(u_normalized, extent=extent, origin='lower', cmap=cmap, 
+    plt.imshow(u_field, extent=extent, origin='lower', cmap=cmap, 
                interpolation='bilinear')  # 0 to 1 range
     plt.xlabel("x")
     plt.ylabel("y")
@@ -108,10 +103,9 @@ def plot_field(u_field, Lx, Ly, cmap='RdBu', save_path=None, filename=None):
     plt.close()
 
 # Saving the files
-def save_pickle(data, save_path, filename):
+def save_results_file(data_dict, save_path, filename):
     os.makedirs(save_path, exist_ok=True)
-    with open(f"{save_path}/{filename}.pkl", "wb") as f:
-        pickle.dump(data, f)
+    np.savez(os.path.join(save_path, filename + ".npz"), **data_dict)
 
 #Full training class
 class PINNPostProcessor:
@@ -119,7 +113,12 @@ class PINNPostProcessor:
         self.model_class = model_class
         self.config = config
         self.model = None
-        self.path_name = f"paper_images/{self.config['model_name']}_no_br/noise_level_{self.config['noise']}"
+
+        # Absolute path to the folder where main.py lives
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Create /results in that same folder
+        self.path_name = os.path.join(base_dir, "results")
         os.makedirs(self.path_name, exist_ok=True)
     
     def train(self):
@@ -141,7 +140,7 @@ class PINNPostProcessor:
     #Literally just plotting all the results we got
     def plot_results(self, true_params):
         plot_parameters(self.model.parameters, true_params, self.path_name)
-        plot_losses(self.model.loss_u_array, self.model.loss_pde_u_array, self.path_name)
+        plot_losses(self.model.loss_u_array, self.model.loss_pde_1_array, self.model.loss_pde_2_array, self.path_name)
         
         # Reconstructed field
         X, Y = np.meshgrid(self.config['xrange'], self.config['yrange'])
@@ -179,5 +178,20 @@ class PINNPostProcessor:
     
     def save_results(self, u_final, u_true, true_params):
         mse = np.mean((u_final - u_true)**2)
-        rel_error = (self.model.final_parameters[:3] - true_params)/true_params
-        save_pickle([self.model.final_parameters, mse, rel_error, u_final], self.path_name, "results")
+
+        pred_params = np.array(self.model.final_parameters[:3])
+        true_params_array = np.array(true_params)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            rel_error = np.where(true_params_array != 0,
+                                (pred_params - true_params_array) / true_params_array,
+                                np.inf)
+
+        data = {
+            "final_parameters": np.array(self.model.final_parameters, dtype=float),
+            "mse": mse,
+            "relative_error": rel_error,
+            "u_final": np.array(u_final, dtype=float)
+        }
+
+        save_results_file(data, self.path_name, "results")

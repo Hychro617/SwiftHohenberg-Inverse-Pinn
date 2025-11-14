@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Swift-Hohenberg PINN parameter estimation using array data
-(Version with n=100 and NO data normalization)
-"""
-
 import logging
 from pathlib import Path
 import numpy as np
@@ -21,16 +15,16 @@ n = 100              # Grid resolution (100x100)
 dx = L_DOMAIN / (n - 1) # Grid spacing
 
 MODEL_CONFIG = {
-    'nodes': 265,
+    'nodes': 300,
     'n': n,
     'noise': 0,
     'learning_rates': [1e-5, 2e-3],
     'length_app': 15000, # Initial data-fitting phase length
-    'length_total': 85000,
-    'batchsize': 1024,
+    'length_total': 120000,
+    'batchsize': 256,
     'step_size': 2000,
     'model_name': "image_based_experiment_n100_raw", # Updated model name
-    'sigma2': 10 / 10,
+    'sigma2': 2,
     'tol': 1e-7,
 }
 
@@ -66,8 +60,8 @@ def main():
 
     x_phys, y_phys, dx = get_physical_grid(L_DOMAIN, n)
 
-    data_path = Path("C:/Users/mafet/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
-
+    #data_path = Path("C:/Users/mafet/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
+    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
     try:
         u_tp = load_pattern_array(data_path, n=n)
         logger.info(f"Pattern array loaded (raw) with final shape: {u_tp.shape}")
