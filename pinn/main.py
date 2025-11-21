@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 L_DOMAIN = 16*np.pi      # Physical domain size
-n = 64              # Grid resolution (100x100)
+n = 32     # Grid resolution (100x100)
 dx = L_DOMAIN / (n - 1) # Grid spacing
 
 MODEL_CONFIG = {
@@ -29,7 +29,7 @@ MODEL_CONFIG = {
     'n': n,
     'noise': 0,
     'learning_rates': [1e-5, 2e-3],
-    'length_app': 15000, # Initial data-fitting phase length
+    'length_app': 20000, # Initial data-fitting phase length
     'length_total': 120000,
     'batchsize': 256,
     'step_size': 2000,
@@ -61,7 +61,7 @@ def load_pattern_array(array_path: str, n: int = None):
 def get_physical_grid(L_DOMAIN: float, n: int):
     """Generate physical coordinates for PINN training"""
     x = np.linspace(0, L_DOMAIN, n)
-    y = np.linspace(0, L_DOMAIN, n)
+    y = np.linspace(0, L_DOMAIN, n)-0   
     dx = x[1] - x[0]
     return x, y, dx
 
@@ -72,25 +72,16 @@ def main():
     x_phys, y_phys, dx = get_physical_grid(L_DOMAIN, n)
 
     #data_path = Path("C:/Users/mafet/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
-    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
+    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN_res32.npy")
     try:
         u_tp = load_pattern_array(data_path, n=n)
         logger.info(f"Pattern array loaded (raw) with final shape: {u_tp.shape}")
     except FileNotFoundError:
-        logger.warning(f"Array file not found at {data_path}, generating synthetic pattern instead")
-        # Ensure pde_utils is available if this block is needed
-        try:
-            from pde_utils import generate_synthetic_pattern
-            u_tp_syn, _ = generate_synthetic_pattern(n, C_ORIGINAL, dx)
-
-            # --- NO NORMALIZATION FOR SYNTHETIC DATA ---
-            u_tp = u_tp_syn.astype(float)
-            # --- END NO SYNTHETIC NORMALIZATION ---
-
-            logger.info(f"Generated raw synthetic pattern with shape: {u_tp.shape}")
-        except ImportError:
-            logger.error("pde_utils not found. Cannot generate synthetic data.")
-            return # Exit if synthetic data generation fails
+        # HARD FAIL INSTEAD OF SYNTHETIC GENERATION
+        raise FileNotFoundError(
+            f"Required data file not found: {data_path}\n"
+            "No synthetic generation attempted. Fix the path or provide the file."
+        )
 
 
     # --- Check data range (will show raw range) ---
@@ -120,15 +111,6 @@ def main():
     
     logger.info("Generating plots and saving results") 
     trainer.plot_results(C_ORIGINAL)
-
-    # Ensure pde_utils is available if this block is needed
-    try:
-        from pde_utils import step_forward2
-        u_tp_new = trainer.simulate_pattern(step_forward2)
-        trainer.save_results(u_tp_new, u_tp, C_ORIGINAL)
-    except ImportError:
-        logger.warning("pde_utils not found. Skipping simulation and saving steps.")
-
 
     logger.info("Training and analysis complete")
 

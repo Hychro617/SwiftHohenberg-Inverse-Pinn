@@ -3,8 +3,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
 from layers import RBFLayer
+from tensorflow.keras import backend as K
+from collections import deque
 
-print("\n*** SUCCESSFULLY LOADED RBF SS MODEL (V3 - PRINCIPLED OPTIMIZATION) ***\n")
+print("\n*** SUCCESSFULLY LOADED RBF SS MODEL (V4 - GRAD NORM) ***\n")
 
 class RBF_PINNs(tf.keras.layers.Layer):
     def __init__(
@@ -19,11 +21,11 @@ class RBF_PINNs(tf.keras.layers.Layer):
         tol,            # Loss tolerance
         threshold_ep,   # Iteration count for Phase 1
         batchsize,      # Batch size
-        sigma2=2,       # RBF layer parameter
-        target_data_pde_ratio=35,  # *** Stop annealing at this Data:PDE ratio ***
+        sigma2=5,       # RBF layer parameter
+        alpha=2,      # GradNorm asymmetry parameter
     ):
         super().__init__()
-        
+
         # --- Parameters & Grid Setup ---
         self.min_lr = min_lr
         self.max_lr = max_lr
@@ -33,66 +35,62 @@ class RBF_PINNs(tf.keras.layers.Layer):
         self.n = len(x)
         self.epochs = 0
         self.iterations = 0
+        
+        # --- GradNorm Parameters ---
+        self.alpha = alpha  # Asymmetry parameter
+        self.lr_weights = 0.025  # Learning rate for weight updates (from paper)
+        self.weight_update_frequency = 100  # How often to update weights
+        
+        # --- Initial Loss Tracking ---
+        self.initial_loss_u = None
+        self.initial_loss_pde1 = None  
+        self.initial_loss_pde2 = None
+        self.initial_losses_set = False
 
-        # --- 3-PHASE TIMELINE ---
-        self.threshold_p1 = threshold_ep          
-        self.threshold_p2 = threshold_ep + 25000
+        # --- Rest of your existing initialization ---
+        self.threshold_p1 = threshold_ep
+        self.threshold_p2 = threshold_ep + 30000
         
-        # --- PRINCIPLED ANNEALING PARAMETERS ---
-        self.annealing_step = 4000
-        self.pde2_growth_rate = 1.1  # More conservative
-        self.data_decay_rate = 0.98   # More conservative
-        
-        # *** PRINCIPLED STOPPING CONDITION ***
-        self.target_data_pde_ratio = target_data_pde_ratio
-        self.annealing_active = True
-        self.refinement_phase = False  # *** NEW: Track refinement phase ***
-        
-        # --- Physical Parameters ---
+        # Physical Parameters
         self.epsilon = tf.Variable([0.5], dtype=tf.float32, trainable=True)
         self.delta = tf.Variable([0.406], dtype=tf.float32, trainable=False)
         self.gamma = tf.Variable([0.196], dtype=tf.float32, trainable=False)
         
-        # --- Data & Coordinate Preparation ---
+    
+        # Data & Architecture
         self.u = tf.constant(u.flatten()[:, None], dtype=tf.float32)
         self.max_val = np.max(x)
         X_np, Y_np = np.meshgrid(x, y)
         self.tot_len = len(X_np.flatten())
-        
+        self.u_scale = float(np.mean(u.flatten()**2)) 
+
         self.X = tf.constant(X_np.flatten()[:, None], dtype=tf.float32)
         self.Y = tf.constant(Y_np.flatten()[:, None], dtype=tf.float32)
 
-        # --- Architecture: RBF + Dense ---
-        self.model_up = tf.keras.Sequential(
-            [
-                RBFLayer(self.units, 1 / sigma2, self.max_val),
-                tf.keras.layers.Dense(2, input_shape=(self.units,), use_bias=False),
-            ]
-        )
-        
-        # --- Separate Optimizers ---
+        self.model_up = tf.keras.Sequential([
+            RBFLayer(self.units, 1 / sigma2, self.max_val),
+            tf.keras.layers.Dense(2, input_shape=(self.units,), use_bias=False),
+        ])
+
+        # Optimizers - ONLY CHANGE: Lower ε learning rate
         self.optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=self.max_lr)
-        
-        # *** CORRECTED LR SCHEDULING ***
+        self.refinement_eps_lr = 1e-6
         self.initial_eps_lr = 1e-5  # *** CHANGED FROM 1e-4 TO 1e-5 ***
-        self.refinement_eps_lr = 1e-6  # *** NEW: Target LR for refinement ***
-        self.eps_lr = tf.Variable(self.initial_eps_lr, trainable=False)
-        self.optimizer_eps = tf.keras.optimizers.legacy.Adam(learning_rate=self.eps_lr)
+        self.current_eps_lr = float(self.initial_eps_lr)
+        self.optimizer_eps = tf.keras.optimizers.legacy.Adam(learning_rate=self.current_eps_lr)
         
+        # *** NEW: Separate optimizer for loss weights ***
+        self.optimizer_weights = tf.keras.optimizers.legacy.Adam(learning_rate=self.lr_weights)
+
         self.mse = tf.keras.losses.MeanSquaredError()
 
-        # --- Loss Weights ---
-        self.weight_data = tf.Variable(100.0, dtype=tf.float32, trainable=False)
-        self.weight_pde1 = tf.Variable(1.0, dtype=tf.float32, trainable=False)
-        self.weight_pde2 = tf.Variable(1.0, dtype=tf.float32, trainable=False)
-        
-        # --- History Tracking ---
-        self._init_history()
+        # Loss Weights as Variables
+        self.weight_data = tf.Variable(1.0, dtype=tf.float32, trainable=True)  
+        self.weight_pde1 = tf.Variable(1.0, dtype=tf.float32, trainable=True)
+        self.weight_pde2 = tf.Variable(1.0, dtype=tf.float32, trainable=True)
 
-        # --- Plotting attributes ---
-        self.fig = None
-        self.ax = None
-        self.img = None
+        # History Tracking
+        self._init_history()
 
     def _init_history(self):
         """Initializes history lists."""
@@ -106,108 +104,149 @@ class RBF_PINNs(tf.keras.layers.Layer):
         self._u_m_array = []
         self._u_s_array = []
         self._eps_lr_array = []
+        # Weight history
+        self._weight_data_array = []
+        self._weight_pde1_array = []
+        self._weight_pde2_array = []
+        self._gradnorm_u_array  = []
+        self._gradnorm_pde1_array = []
+        self._gradnorm_pde2_array = []
 
-    # ----------------------------------------------------------------------
-    # CORE METHODS
-    # ----------------------------------------------------------------------
-    
+
+    def apply_gradnorm_weights(self, phase, gradnorms, losses):
+        if self.iterations % self.weight_update_frequency != 0:
+            return
+
+        # Convert gradnorms and losses to tensors
+        gradnorms_tf = [tf.convert_to_tensor(g, dtype=tf.float32) for g in gradnorms]
+        losses_tf = [tf.convert_to_tensor(l, dtype=tf.float32) for l in losses]
+
+        # Initialize loss buffers
+        num_tasks = len(losses_tf)
+        if not hasattr(self, 'loss_buffers') or len(self.loss_buffers) != num_tasks:
+            self.loss_buffers = [deque(maxlen=5) for _ in range(num_tasks)]
+
+        # Update buffers
+        for i, lt in enumerate(losses_tf):
+            self.loss_buffers[i].append(float(lt.numpy()) if hasattr(lt, 'numpy') else float(lt))
+
+        # Compute inverse training rates r_i using moving average
+        r = []
+        for i, buf in enumerate(self.loss_buffers):
+            if len(buf) < 2:
+                r.append(tf.constant(1.0, dtype=tf.float32))
+            else:
+                moving_avg = np.mean(list(buf)[:-1])
+                r.append(losses_tf[i] / (moving_avg + 1e-8))
+        r_tf = r
+
+        if phase == 'PHASE 1':
+            return  # nothing to do
+
+        elif phase == 'PHASE 2':
+            if self.initial_loss_u is None or self.initial_loss_pde1 is None:
+                self.initial_loss_u = losses_tf[0]
+                self.initial_loss_pde1 = losses_tf[1]
+                self.weight_data.assign(3.0)
+                self.weight_pde1.assign(1.0)
+                self.weight_pde2.assign(0.0)
+                return
+
+            r_avg = (r_tf[0] + r_tf[1]) / 4.0
+            r_rel = [r_tf[i] / (r_avg + 1e-8) for i in range(2)]
+            G_avg = (gradnorms_tf[0] + gradnorms_tf[1]) / 3.0
+            targets = [G_avg * tf.pow(r_rel[i], float(self.alpha)) for i in range(2)]
+
+            # Compute loss_grad entirely in TF
+            with tf.GradientTape() as tape:
+                tape.watch([self.weight_data, self.weight_pde1])
+                actuals = [gradnorms_tf[0] * self.weight_data,
+                        gradnorms_tf[1] * self.weight_pde1]
+                loss_grad = tf.add_n([tf.square(actuals[i] - targets[i]) for i in range(2)])
+            grads = tape.gradient(loss_grad, [self.weight_data, self.weight_pde1])
+            self.optimizer_weights.apply_gradients(zip(grads, [self.weight_data, self.weight_pde1]))
+
+            # Optional renormalization
+            total = self.weight_data + self.weight_pde1 + 1e-8
+            self.weight_data.assign(4.0 * (self.weight_data / total))
+            self.weight_pde1.assign(4.0 * (self.weight_pde1 / total))
+            self.weight_pde2.assign(0.0)
+
+        elif phase == 'PHASE 3':
+            if not self.initial_losses_set:
+                self.initial_loss_u = losses_tf[0]
+                self.initial_loss_pde1 = losses_tf[1]
+                self.initial_loss_pde2 = losses_tf[2]
+                self.initial_losses_set = True
+                self.weight_data.assign(6.0)
+                self.weight_pde1.assign(1.0)
+                self.weight_pde2.assign(3.0)
+                tf.print("*** Phase 3 initialized ***")
+                return
+
+            r_avg = tf.reduce_mean([r_tf[0], r_tf[1], r_tf[2]])
+            r_rel = [r_tf[i] / (r_avg + 1e-8) for i in range(3)]
+            G_avg = (gradnorms_tf[0] + gradnorms_tf[1] + gradnorms_tf[2]) / 10
+            targets = [G_avg * tf.pow(r_rel[i], float(self.alpha)) for i in range(3)]
+
+            with tf.GradientTape() as tape:
+                tape.watch([self.weight_data, self.weight_pde1, self.weight_pde2])
+                actuals = [
+                    gradnorms_tf[0] * self.weight_data,
+                    gradnorms_tf[1] * self.weight_pde1,
+                    gradnorms_tf[2] * self.weight_pde2
+                ]
+                loss_grad = tf.add_n([tf.square(actuals[i] - targets[i]) for i in range(3)])
+
+            grads = tape.gradient(loss_grad, [self.weight_data, self.weight_pde1, self.weight_pde2])
+            self.optimizer_weights.apply_gradients(zip(grads, [self.weight_data, self.weight_pde1, self.weight_pde2]))
+
+            # Renormalize to sum=3
+            total = self.weight_data + self.weight_pde1 + self.weight_pde2 + 1e-8
+            self.weight_data.assign(10 * (self.weight_data / total))
+            self.weight_pde1.assign(10 * (self.weight_pde1 / total))
+            self.weight_pde2.assign(10 * (self.weight_pde2 / total))
+
     @tf.function
     def _calculate_residuals(self, x, y):
-        """
-        Calculates u_pred, p_pred, and all PDE residuals.
-        Assumes steady-state (u_t = 0) and q0 = 1.
-        """
+        """Existing residuals calculation - unchanged"""
         with tf.GradientTape(persistent=True) as tape_outer:
             tape_outer.watch([x, y])
-            
+
             with tf.GradientTape(persistent=True) as tape_inner:
                 tape_inner.watch([x, y])
-                
+
                 model_output = self.model_up(tf.concat([x, y], 1), training=True)
                 u_pred, p_pred = tf.split(model_output, 2, axis=1)
-            
+
                 u_x = tape_inner.gradient(u_pred, x); u_y = tape_inner.gradient(u_pred, y)
                 p_x = tape_inner.gradient(p_pred, x); p_y = tape_inner.gradient(p_pred, y)
 
             u_xx = tape_outer.gradient(u_x, x); u_yy = tape_outer.gradient(u_y, y)
             p_xx = tape_outer.gradient(p_x, x); p_yy = tape_outer.gradient(p_y, y)
-        
+
             u_xx = tf.zeros_like(x) if u_xx is None else u_xx
             u_yy = tf.zeros_like(y) if u_yy is None else u_yy
             p_xx = tf.zeros_like(x) if p_xx is None else p_xx
             p_yy = tf.zeros_like(y) if p_yy is None else p_yy
-        
+
         del tape_inner
         del tape_outer
-        
+
         Laplace_u = u_xx + u_yy
         Laplace_p = p_xx + p_yy
-        
+
         pde_residual_1 = p_pred - Laplace_u
 
-        nonlinear_terms = (self.epsilon * u_pred - 
-                           self.delta * tf.square(u_pred) - 
-                           self.gamma * tf.pow(u_pred, 3))
-        
+        nonlinear_terms = (self.epsilon * u_pred 
+                           - self.delta * tf.square(u_pred) 
+                           - self.gamma * tf.pow(u_pred, 3))
+
         sh_operator = u_pred + 2.0 * p_pred + Laplace_p
-        
+
         full_sh_residual = nonlinear_terms - sh_operator
-        
+
         return u_pred, p_pred, pde_residual_1, full_sh_residual
-
-    @tf.function
-    def train_step_p1(self, x, y, u):
-        """PHASE 1: PURE DATA FIT (Network Weights Only)"""
-        with tf.GradientTape() as tape:
-            u_pred, _ = tf.split(self.model_up(tf.concat([x, y], 1), training=True), 2, axis=1)
-            loss_u = self.mse(u_pred, u) / tf.reduce_mean(tf.square(u))
-        
-        grads = tape.gradient(loss_u, self.model_up.trainable_variables)
-        self.optimizer.apply_gradients(zip(grads, self.model_up.trainable_variables))
-        return loss_u
-
-    @tf.function
-    def train_step_p2(self, x, y, u):
-        """PHASE 2: CONSTRAINT-FIT (Network Weights Only, Epsilon is FROZEN)"""
-        with tf.GradientTape() as tape:
-            u_pred, _, pde1_residual, _ = self._calculate_residuals(x, y) 
-            
-            loss_u = self.mse(u_pred, u) / tf.reduce_mean(tf.square(u))
-            loss_pde1 = tf.reduce_mean(tf.square(pde1_residual))
-            
-            total_loss = (self.weight_data * loss_u + 
-                          self.weight_pde1 * loss_pde1)
-                    
-        grads = tape.gradient(total_loss, self.model_up.trainable_variables)
-        self.optimizer.apply_gradients(zip(grads, self.model_up.trainable_variables))
-        return total_loss, loss_u, loss_pde1, tf.constant(0.0)
-
-    @tf.function
-    def train_step_p3(self, x, y, u): 
-        """PHASE 3: INVERSE SOLVE (Network Weights + Epsilon)"""
-        with tf.GradientTape(persistent=True) as tape:
-            u_pred, _, pde1_residual, full_sh_residual = self._calculate_residuals(x, y)
-            
-            loss_u = self.mse(u_pred, u) / tf.reduce_mean(tf.square(u))
-            loss_pde1 = tf.reduce_mean(tf.square(pde1_residual))
-            loss_pde2 = tf.reduce_mean(tf.square(full_sh_residual))
-            
-            total_loss = (self.weight_data * loss_u + 
-                          self.weight_pde1 * loss_pde1 + 
-                          self.weight_pde2 * loss_pde2)
-            
-        # 1. Update Network
-        net_grads = tape.gradient(total_loss, self.model_up.trainable_variables)
-        self.optimizer.apply_gradients(zip(net_grads, self.model_up.trainable_variables))
-        
-        # 2. Update Epsilon
-        eps_grads = tape.gradient(total_loss, [self.epsilon])
-        self.optimizer_eps.apply_gradients(zip(eps_grads, [self.epsilon]))
-        
-        self.epsilon.assign(tf.minimum(tf.maximum(self.epsilon, 0.1), 0.9))
-        
-        del tape
-        return total_loss, loss_u, loss_pde1, loss_pde2
 
     def create_batch(self, batch_size):
         """Samples a batch from the steady-state data."""
@@ -217,186 +256,223 @@ class RBF_PINNs(tf.keras.layers.Layer):
         u_batch = tf.gather(self.u, indices)
         return x_batch, y_batch, u_batch
 
-    def train(self, max_iterations=1e8, step_size=None):
+    @tf.function
+    def train_step_p1(self, x, y, u):
+        """PHASE 1: PURE DATA FIT"""
+        with tf.GradientTape() as tape:
+            u_pred, _ = tf.split(self.model_up(tf.concat([x, y], 1), training=True), 2, axis=1)
+            loss_u = self.mse(u_pred, u) / tf.reduce_mean(tf.square(u) + 1e-8)
+
+        grads = tape.gradient(loss_u, self.model_up.trainable_variables)
+        self.optimizer.apply_gradients(zip(grads, self.model_up.trainable_variables))
+        return loss_u
+
+    @tf.function
+    def train_step_p2(self, x, y, u):
+        """PHASE 2: CONSTRAINT-FIT (Network Weights Only, Epsilon frozen).
+        Returns: total_loss, loss_u, loss_pde1, gradnorm_u, gradnorm_pde1
+        """
+        with tf.GradientTape(persistent=True) as tape:
+            u_pred, _, pde1_residual, _ = self._calculate_residuals(x, y)
+
+            loss_u = self.mse(u_pred, u) / (tf.reduce_mean(tf.square(u)) + 1e-8)
+            loss_pde1 = tf.reduce_mean(tf.square(pde1_residual))
+
+            total_loss = (self.weight_data * loss_u +
+                        self.weight_pde1 * loss_pde1)
+
+        # gradients for network variables for each loss (separately)
+        grads_u = tape.gradient(loss_u, self.model_up.trainable_variables)
+        grads_pde1 = tape.gradient(loss_pde1, self.model_up.trainable_variables)
+
+        # compute gradient norms (global L2 norm)
+        gradnorm_u = tf.linalg.global_norm(grads_u)
+        gradnorm_pde1 = tf.linalg.global_norm(grads_pde1)
+
+        # apply network update using total_loss grads
+        net_grads = tape.gradient(total_loss, self.model_up.trainable_variables)
+        self.optimizer.apply_gradients(zip(net_grads, self.model_up.trainable_variables))
+
+        del tape
+        return total_loss, loss_u, loss_pde1, gradnorm_u, gradnorm_pde1
+
+    @tf.function
+    def train_step_phase3(self, x, y, u):
+        """PHASE 3: Full physics + inverse solve for epsilon"""
+        with tf.GradientTape(persistent=True) as tape:
+            u_pred, _, pde1_res, pde2_res = self._calculate_residuals(x, y)
+            
+            loss_data = tf.reduce_mean(tf.square(u_pred - u)) / (self.u_scale + 1e-8)
+            loss_pde1 = tf.reduce_mean(tf.square(pde1_res))
+            loss_pde2 = tf.reduce_mean(tf.square(pde2_res))
+            
+            total_loss = (self.weight_data * loss_data + 
+                         self.weight_pde1 * loss_pde1 + 
+                         self.weight_pde2 * loss_pde2)
+        
+        # Compute gradient norms for GradNorm
+        grads_data = tape.gradient(loss_data, self.model_up.trainable_variables)
+        grads_pde1 = tape.gradient(loss_pde1, self.model_up.trainable_variables)
+        grads_pde2 = tape.gradient(loss_pde2, self.model_up.trainable_variables)
+
+        gradnorm_data = tf.linalg.global_norm(grads_data)
+        gradnorm_pde1 = tf.linalg.global_norm(grads_pde1)
+        gradnorm_pde2 = tf.linalg.global_norm(grads_pde2)
+        
+        # Update network
+        net_grads = tape.gradient(total_loss, self.model_up.trainable_variables)
+        self.optimizer.apply_gradients(zip(net_grads, self.model_up.trainable_variables))
+        
+        # Update epsilon
+        eps_grads = tape.gradient(total_loss, [self.epsilon])
+        self.optimizer_eps.apply_gradients(zip(eps_grads, [self.epsilon]))
+        self.epsilon.assign(tf.clip_by_value(self.epsilon, 0.1, 0.9))
+        
+        del tape
+        return total_loss, loss_data, loss_pde1, loss_pde2, gradnorm_data, gradnorm_pde1, gradnorm_pde2
+  
+    def train(self, max_iterations=int(1e8), step_size=None):
         from clr_callback import CyclicLR
         import matplotlib.pyplot as plt
         plt.ion()
         
-        clr_cb = CyclicLR(model_optimizer=self, base_lr=self.min_lr, max_lr=self.max_lr, step_size=step_size)
+        # Initial CLR setup with cycling enabled
+        clr_cb = CyclicLR(
+            model_optimizer=self, 
+            base_lr=self.min_lr, 
+            max_lr=self.max_lr, 
+            step_size=step_size,
+            mode='triangular'
+        )
+            
         self.callbacks = clr_cb
         self.callbacks.on_train_begin()
-        
-        tf.print(f"Starting 3-PHASE training (Target Data:PDE ratio = {self.target_data_pde_ratio}:1)")
+
+        tf.print(f"Starting 3-PHASE training with GRAD NORM WEIGHTING and Cyclic LR")
+        tf.print(f"CLR Config: base_lr={self.min_lr:.2e}, max_lr={self.max_lr:.2e}, step_size={step_size}")
+        tf.print(f"Initial Net LR: {self.optimizer.learning_rate.numpy():.2e}")
 
         phase_3_weights_set = False
+        logs = {}  # Initialize logs
 
         while self.iterations < max_iterations:
-            
+
+            # Check if we need to disable CLR cycling at iteration 80000
+            if self.iterations == 80000:
+                tf.print("--- DISABLING CLR CYCLING: SWITCHING TO CONSTANT LR ---")
+                clr_cb = CyclicLR(
+                    model_optimizer=self, 
+                    base_lr=self.min_lr, 
+                    max_lr=self.min_lr,  # Same as base_lr = constant learning rate
+                    step_size=step_size,
+                )
+                self.callbacks = clr_cb
+                self.callbacks.on_train_begin()
+                tf.print(f"LR now fixed at: {self.optimizer.learning_rate.numpy():.2e}")
+
             if self.iterations < self.threshold_p1:
-                # --- PHASE 1: DATA-FITTING ---
                 x_batch, y_batch, u_batch = self.create_batch(self.batchsize)
-                loss_u = self.train_step_p1(x_batch, y_batch, u_batch)
-                self.log_and_store(loss_u, "PHASE 1", loss_u, tf.constant(0.0), tf.constant(0.0))
+                loss_u_tensor = self.train_step_p1(x_batch, y_batch, u_batch)
+                logs = {'loss': float(loss_u_tensor.numpy())}
+                self.log_and_store(loss_u_tensor, "PHASE 1", loss_u_tensor, tf.constant(0.0), tf.constant(0.0))
 
             elif self.iterations < self.threshold_p2:
-                # --- PHASE 2: CONSTRAINT-FIT ---
-                if self.iterations == self.threshold_p1: 
+                if self.iterations == self.threshold_p1:
                     tf.print("--- SWITCHING TO PHASE 2 (CONSTRAINT-FIT) ---")
-                self.weight_data = tf.Variable(80.0, dtype=tf.float32, trainable=False)
-                self.weight_pde1 = tf.Variable(20.0, dtype=tf.float32, trainable=False)
-                
+
                 x_batch, y_batch, u_batch = self.create_batch(self.batchsize)
-                total_loss, loss_u, loss_pde1, loss_pde2_ph = self.train_step_p2(x_batch, y_batch, u_batch)
-                self.log_and_store(total_loss, "PHASE 2", loss_u, loss_pde1, loss_pde2_ph)
-            
+                total_loss_t, loss_u_t, loss_pde1_t, g_u_t, g_p1_t = self.train_step_p2(x_batch, y_batch, u_batch)
+                self.apply_gradnorm_weights("PHASE 2", [g_u_t, g_p1_t], [loss_u_t, loss_pde1_t])
+                logs = {'loss': float(total_loss_t.numpy())}
+                self.log_and_store(total_loss_t, "PHASE 2", loss_u_t, loss_pde1_t, tf.constant(0.0))
+
             else:
-                # --- PHASE 3: INVERSE SOLVE + PRINCIPLED ANNEALING ---
                 if not phase_3_weights_set:
                     tf.print("--- SWITCHING TO PHASE 3 (INVERSE SOLVE) ---")
-                    tf.print("Principle: Maintain reasonable Data:PDE balance for parameter estimation")
-                    self.weight_data.assign(100.0)
-                    self.weight_pde1.assign(1.0)
-                    self.weight_pde2.assign(1.0)
                     phase_3_weights_set = True
-                
-                # *** PRINCIPLED ANNEALING WITH RATIO-BASED STOPPING ***
-                if (self.annealing_active and 
-                    self.iterations > self.threshold_p2 and 
-                    self.iterations % self.annealing_step == 0):
-                    
-                    current_ratio = self.weight_data / self.weight_pde2
-                    
-                    # Check ε stability
-                    if len(self._epsilon_array) >= 50:  # Need enough history
-                        recent_eps = self._epsilon_array[-50:]  # Last 50 values
-                        eps_std = np.std(recent_eps)
-                        eps_trend = np.mean(recent_eps[-10:]) - np.mean(recent_eps[:10])  # Recent trend
-                        
-                        # Determine stability
-                        is_stable = eps_std < 0.01  # Low oscillation
-                        is_converging = abs(eps_trend) < 0.005  # Not drifting
-                        is_near_truth = abs(np.mean(recent_eps) - 0.6) < 0.05  # Close to true value
-                        
-                        if is_stable and is_converging:
-                            # ε is stable - we can safely increase PDE2 influence
-                            new_pde2 = tf.minimum(self.weight_pde2 * 1.15, 15.0)
-                            new_data = tf.maximum(self.weight_data * 0.98, 20.0)
-                            tf.print(f"✓ ε STABLE (std={eps_std:.4f}, trend={eps_trend:.4f}), increasing PDE2 weight")
-                            
-                        else:
-                            # ε is unstable - maintain current weights
-                            new_pde2 = self.weight_pde2
-                            new_data = self.weight_data
-                            reason = []
-                            if not is_stable: reason.append(f"high-std({eps_std:.4f})")
-                            if not is_converging: reason.append(f"drifting({eps_trend:.4f})") 
-                            if not is_near_truth: reason.append(f"far-from-truth")
-                            tf.print(f"✗ ε UNSTABLE ({', '.join(reason)}), maintaining weights")
-                        
-                        # Check if we should stop annealing
-                        if current_ratio <= self.target_data_pde_ratio:
-                            tf.print(f"--- ANNEALING STOPPED: Reached target ratio {current_ratio:.1f}:1 ---")
-                            tf.print(f"*** SWITCHING ε LR FROM {self.eps_lr.numpy():.2e} TO {self.refinement_eps_lr:.2e} ***")
-                            self.annealing_active = False
-                            self.refinement_phase = True
-                            self.eps_lr.assign(self.refinement_eps_lr)
-                            self.optimizer_eps.learning_rate = self.eps_lr
-                        else:
-                            self.weight_pde2.assign(new_pde2)
-                            self.weight_data.assign(new_data)
-                            tf.print(f"New weights: Data={self.weight_data.numpy():.1f}, PDE2={self.weight_pde2.numpy():.1f}, Ratio={current_ratio:.1f}:1")
-                            
-                    else:
-                        # Not enough history yet - use conservative default
-                        new_pde2 = tf.minimum(self.weight_pde2 * 1.05, 8.0)  # Very conservative
-                        new_data = tf.maximum(self.weight_data * 0.99, 40.0)
-                        self.weight_pde2.assign(new_pde2)
-                        self.weight_data.assign(new_data)
-                        tf.print(f"Initial annealing: Data={self.weight_data.numpy():.1f}, PDE2={self.weight_pde2.numpy():.1f}")
 
                 x_batch, y_batch, u_batch = self.create_batch(self.batchsize)
-                total_loss, loss_u, loss_pde1, loss_pde2 = self.train_step_p3(x_batch, y_batch, u_batch)
-                self.log_and_store(total_loss, "PHASE 3", loss_u, loss_pde1, loss_pde2)
+                total_loss_t, loss_u_t, loss_pde1_t, loss_pde2_t, g_u_t, g_p1_t, g_p2_t = self.train_step_phase3(x_batch, y_batch, u_batch)
+                self.apply_gradnorm_weights("PHASE 3", [g_u_t, g_p1_t, g_p2_t], [loss_u_t, loss_pde1_t, loss_pde2_t])
+                logs = {'loss': float(total_loss_t.numpy())}
+                self.log_and_store(total_loss_t, "PHASE 3", loss_u_t, loss_pde1_t, loss_pde2_t)
 
-            
-            self.callbacks.on_batch_end(self.epochs)
+            # Update CLR
+            self.callbacks.on_batch_end(self.iterations, logs=logs)
+
             self.iterations += 1
-
-            # --- Plotting ---
-            if self.iterations % 2000 == 0:
-                try:
-                    tf.print(f"\n[Plotting] Iteration {self.iterations}. Updating plot...")
-                    
-                    # 1. Get full prediction (outside tape)
-                    u_pred_full, _ = tf.split(
-                        self.model_up(tf.concat([self.X, self.Y], 1), training=False), 
-                        2, axis=1
-                    )
-                    u_plot = tf.reshape(u_pred_full, (self.n, self.n)).numpy()
-
-                    # 2. Initialize or update plot
-                    if not hasattr(self, 'fig') or self.fig is None:
-                        # Create figure for the first time
-                        self.fig, self.ax = plt.subplots(figsize=(7, 6))
-                        self.img = self.ax.imshow(u_plot, cmap='viridis', interpolation='none', origin='lower')
-                        self.fig.colorbar(self.img, ax=self.ax)
-                    else:
-                        # Update existing figure
-                        self.img.set_data(u_plot)
-                        self.img.set_clim(np.min(u_plot), np.max(u_plot)) # Rescale colors
-                        self.fig.canvas.draw()
-                    
-                    self.ax.set_title(f"Prediction at Iteration {self.iterations}")
-                    
-                    # 3. Pause to allow GUI update
-                    plt.pause(0.01) # Small pause to render
-                
-                except Exception as e:
-                    # Handle if user closes plot window
-                    tf.print(f"[Plotting] Error: {e}. Window closed? Re-initializing plot.")
-                    self.fig = None
-
-            if self.iterations % 100 == 0: 
+            if self.iterations % 100 == 0:
                 self.epochs += 1
-        
+
         tf.print("Training loop finished.")
+        tf.print(f"Final Net LR: {self.optimizer.learning_rate.numpy():.2e}")
         plt.ioff()
         plt.show()
 
-    def log_and_store(self, loss, phase_name, loss_u, loss_pde1, loss_pde2):
-        """Consolidates logging, history storage."""
-        if loss_pde2 is None: loss_pde2 = tf.constant(0.0)
+    def log_and_store(self, loss, phase_name, loss_u, loss_pde1, loss_pde2, gradnorm_u=None, gradnorm_pde1=None, gradnorm_pde2=None):
+        """Enhanced logging with weight tracking."""
+        if loss_pde2 is None: 
+            loss_pde2 = tf.constant(0.0)
+
+        current_eps_lr = float(self.current_eps_lr)
         
-        current_eps_lr = self.eps_lr.numpy()
-        
+        # *** FIX: Get the ACTUAL network learning rate from the optimizer ***
+        current_net_lr = float(self.optimizer.learning_rate.numpy())
+
         if self.iterations % 50 == 0:
-            self._loss_array.append(loss.numpy())
-            self._loss_u_array.append(loss_u.numpy())
-            self._loss_pde1_array.append(loss_pde1.numpy())
-            self._loss_pde2_array.append(loss_pde2.numpy())
-            self._epsilon_array.append(self.epsilon.numpy()[0])
-            self._delta_array.append(self.delta.numpy()[0])
-            self._gamma_array.append(self.gamma.numpy()[0]) 
-            self._u_m_array.append(0.0) 
-            self._u_s_array.append(0.0) 
+            self._loss_array.append(float(loss.numpy()))
+            self._loss_u_array.append(float(loss_u.numpy()))
+            self._loss_pde1_array.append(float(loss_pde1.numpy()))
+            self._loss_pde2_array.append(float(loss_pde2.numpy()))
+            self._epsilon_array.append(float(self.epsilon.numpy()[0]))
+            self._delta_array.append(float(self.delta.numpy()[0]))
+            self._gamma_array.append(float(self.gamma.numpy()[0]))
+            self._u_m_array.append(0.0)
+            self._u_s_array.append(0.0)
             self._eps_lr_array.append(current_eps_lr)
-            
+            # Store current weights
+            self._weight_data_array.append(float(self.weight_data.numpy()))
+            self._weight_pde1_array.append(float(self.weight_pde1.numpy()))
+            self._weight_pde2_array.append(float(self.weight_pde2.numpy()))
+            self._gradnorm_u_array.append(float(gradnorm_u.numpy()) if gradnorm_u is not None else 0.0)
+            self._gradnorm_pde1_array.append(float(gradnorm_pde1.numpy()) if gradnorm_pde1 is not None else 0.0)
+            self._gradnorm_pde2_array.append(float(gradnorm_pde2.numpy()) if gradnorm_pde2 is not None else 0.0)
+
+
         if self.iterations % 200 == 0:
-            tf.print(f"{phase_name} - It: {self.iterations}, Loss: {loss.numpy():.3e}, L_Data: {loss_u.numpy():.3e}, "
-                     f"L_PDE1: {loss_pde1.numpy():.3e}, L_PDE2: {loss_pde2.numpy():.3e}, "
-                     f"ε: {self.epsilon.numpy()[0]:.6f}, ε_LR: {current_eps_lr:.2e}," f" Data Weight: {self.weight_data.numpy()}," 
-                     f" PDE 1 Weight: {self.weight_pde1.numpy()}, PDE 2 Weight: {self.weight_pde2.numpy()}")
+            print(    f"Iter: {self.iterations:6d} | "
+                      f"Loss: {float(loss.numpy()):8.3e} | "
+                      f"Data: {float(loss_u.numpy()):8.3e} | "
+                      f"PDE1: {float(loss_pde1.numpy()):8.3e} | "
+                      f"PDE2: {float(loss_pde2.numpy()):8.3e} | "
+                      f"ε: {float(self.epsilon.numpy()[0]):.4f} | "
+                      f"W: ({self.weight_data.numpy():.2f}, "
+                      f"{self.weight_pde1.numpy():.2f}, "
+                      f"{self.weight_pde2.numpy():.2f}) | "
+                      f"LR: {float(self.optimizer.learning_rate.numpy()):.2e} | ")
             
-    # --- Property methods ---
+            
+    # --- Additional property methods for weight history ---
+    @property
+    def weight_data_array(self):
+        return self._weight_data_array
+
+    @property
+    def weight_pde1_array(self):
+        return self._weight_pde1_array
+
+    @property
+    def weight_pde2_array(self):
+        return self._weight_pde2_array
     
     @property
     def parameters(self):
         return [self._epsilon_array, self._delta_array, self._gamma_array, self._u_m_array, self._u_s_array, self._eps_lr_array]
 
-    @property 
+    @property
     def loss_pde_1_array(self):
         return self._loss_pde1_array
-    
+
     @property
     def loss_pde_2_array(self):
         return self._loss_pde2_array
@@ -412,7 +488,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
     @property
     def epsilon_array(self):
         return self._epsilon_array
-    
+
     @property
     def eps_lr_array(self):
         return self._eps_lr_array
@@ -423,3 +499,13 @@ class RBF_PINNs(tf.keras.layers.Layer):
             return [self._epsilon_array[-1], self._delta_array[-1], self._gamma_array[-1]]
         else:
             return [self.epsilon.numpy()[0], self.delta.numpy()[0], self.gamma.numpy()[0]]
+        
+    @property
+    def gradnorm_u_array(self):
+        return self._gradnorm_u_array
+    @property
+    def gradnorm_pde1_array(self):
+        return self._gradnorm_pde1_array
+    @property
+    def gradnorm_pde2_array(self):
+        return self._gradnorm_pde2_array
