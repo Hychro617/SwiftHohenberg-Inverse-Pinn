@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 L_DOMAIN = 16*np.pi      # Physical domain size
-n = 32     # Grid resolution (100x100)
+n = 64   # Grid resolution (100x100)
 dx = L_DOMAIN / (n - 1) # Grid spacing
 
 MODEL_CONFIG = {
@@ -72,7 +72,7 @@ def main():
     x_phys, y_phys, dx = get_physical_grid(L_DOMAIN, n)
 
     #data_path = Path("C:/Users/mafet/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
-    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN_res32.npy")
+    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/pattern_eps0.600_delta0.406_gamma0.196_PINN.npy")
     try:
         u_tp = load_pattern_array(data_path, n=n)
         logger.info(f"Pattern array loaded (raw) with final shape: {u_tp.shape}")

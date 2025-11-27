@@ -86,8 +86,9 @@ class RBF_PINNs(tf.keras.layers.Layer):
 
         # Loss Weights as Variables
         self.weight_data = tf.Variable(1.0, dtype=tf.float32, trainable=True)  
-        self.weight_pde1 = tf.Variable(1.0, dtype=tf.float32, trainable=True)
-        self.weight_pde2 = tf.Variable(1.0, dtype=tf.float32, trainable=True)
+        self.weight_pde1 = tf.Variable(0.0, dtype=tf.float32, trainable=True)
+        self.weight_pde2 = tf.Variable(0.0, dtype=tf.float32, trainable=True)
+        
 
         # History Tracking
         self._init_history()
@@ -111,6 +112,9 @@ class RBF_PINNs(tf.keras.layers.Layer):
         self._gradnorm_u_array  = []
         self._gradnorm_pde1_array = []
         self._gradnorm_pde2_array = []
+        self._weight_frac_data = []
+        self._weight_frac_pde1 = []
+        self._weight_frac_pde2 = []
 
 
     def apply_gradnorm_weights(self, phase, gradnorms, losses):
@@ -141,7 +145,14 @@ class RBF_PINNs(tf.keras.layers.Layer):
         r_tf = r
 
         if phase == 'PHASE 1':
-            return  # nothing to do
+            self.weight_data.assign(1.0)
+            self.weight_pde1.assign(0.0)
+            self.weight_pde2.assign(0.0)
+            self.weight_frac_data.append(1.0) 
+            self.weight_frac_pde1.append(0.0)
+            self.weight_frac_pde2.append(0.0)
+            return
+
 
         elif phase == 'PHASE 2':
             if self.initial_loss_u is None or self.initial_loss_pde1 is None:
@@ -171,6 +182,9 @@ class RBF_PINNs(tf.keras.layers.Layer):
             self.weight_data.assign(4.0 * (self.weight_data / total))
             self.weight_pde1.assign(4.0 * (self.weight_pde1 / total))
             self.weight_pde2.assign(0.0)
+            self.weight_frac_data.append(self.weight_data/total) 
+            self.weight_frac_pde1.append(self.weight_pde1 / total)
+            self.weight_frac_pde2.append(0)
 
         elif phase == 'PHASE 3':
             if not self.initial_losses_set:
@@ -206,6 +220,9 @@ class RBF_PINNs(tf.keras.layers.Layer):
             self.weight_data.assign(10 * (self.weight_data / total))
             self.weight_pde1.assign(10 * (self.weight_pde1 / total))
             self.weight_pde2.assign(10 * (self.weight_pde2 / total))
+            self.weight_frac_data.append(self.weight_data/total) 
+            self.weight_frac_pde1.append(self.weight_pde1 / total)
+            self.weight_frac_pde2.append(self.weight_pde2 / total)
 
     @tf.function
     def _calculate_residuals(self, x, y):
@@ -265,6 +282,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
 
         grads = tape.gradient(loss_u, self.model_up.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.model_up.trainable_variables))
+        del tape
         return loss_u
 
     @tf.function
@@ -326,7 +344,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
         # Update epsilon
         eps_grads = tape.gradient(total_loss, [self.epsilon])
         self.optimizer_eps.apply_gradients(zip(eps_grads, [self.epsilon]))
-        self.epsilon.assign(tf.clip_by_value(self.epsilon, 0.1, 0.9))
+        self.epsilon.assign(tf.clip_by_value(self.epsilon, 0.0, 1.0))
         
         del tape
         return total_loss, loss_data, loss_pde1, loss_pde2, gradnorm_data, gradnorm_pde1, gradnorm_pde2
@@ -437,6 +455,14 @@ class RBF_PINNs(tf.keras.layers.Layer):
             self._gradnorm_u_array.append(float(gradnorm_u.numpy()) if gradnorm_u is not None else 0.0)
             self._gradnorm_pde1_array.append(float(gradnorm_pde1.numpy()) if gradnorm_pde1 is not None else 0.0)
             self._gradnorm_pde2_array.append(float(gradnorm_pde2.numpy()) if gradnorm_pde2 is not None else 0.0)
+            total = self.weight_data + self.weight_pde1 + self.weight_pde2 + 1e-8
+            self._weight_frac_data.append(float(self.weight_data.numpy() / total.numpy()))
+            self._weight_frac_pde1.append(float(self.weight_pde1.numpy() / total.numpy()))
+            self._weight_frac_pde2.append(float(self.weight_pde2.numpy() / total.numpy()))
+            
+            self._gradnorm_u_array.append(float(gradnorm_u.numpy()) if gradnorm_u is not None else 0.0)
+            self._gradnorm_pde1_array.append(float(gradnorm_pde1.numpy()) if gradnorm_pde1 is not None else 0.0)
+            self._gradnorm_pde2_array.append(float(gradnorm_pde2.numpy()) if gradnorm_pde2 is not None else 0.0)
 
 
         if self.iterations % 200 == 0:
@@ -509,3 +535,13 @@ class RBF_PINNs(tf.keras.layers.Layer):
     @property
     def gradnorm_pde2_array(self):
         return self._gradnorm_pde2_array
+    @property 
+    def weight_frac_data(self):
+        return self._weight_frac_data
+    @property
+    def weight_frac_pde1(self):
+        return self._weight_frac_pde1 
+    @property
+    def weight_frac_pde2(self):
+        return self._weight_frac_pde2 
+    
