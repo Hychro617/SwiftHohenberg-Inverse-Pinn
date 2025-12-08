@@ -9,11 +9,11 @@ The methodology is detailed in the paper:
 
 ## Technical Overview and Innovation
 
-The framework's core strength lies in its specialized architecture and **robust 3-Phase Training Strategy** coupled with **GradNorm dynamic loss weighting** to stabilize the inverse parameter solve.
+The framework's core strength lies in its specialised architecture and **robust 3-Phase Training Strategy** coupled with **GradNorm dynamic loss weighting** to stabilise the inverse parameter solve.
 
 ### 1. RBF-Based PINN Architecture
 
-This implementation utilizes a **Radial Basis Function (RBF) Neural Network** to approximate the pattern field $u(x, y)$, rather than a traditional Multi-Layer Perceptron (MLP). The RBF architecture is chosen for its ability to produce **smoother spatial derivatives**, which is beneficial when enforcing the physics constraints of a Partial Differential Equation (PDE).
+This implementation utilises a **Radial Basis Function (RBF) Neural Network** to approximate the pattern field $u(x, y)$, rather than a traditional Multi-Layer Perceptron (MLP). The RBF architecture is chosen for its ability to produce **smoother spatial derivatives**, which is beneficial when enforcing the physics constraints of a Partial Differential Equation (PDE).
 
 ### 2. The 3-Phase Training Strategy
 
@@ -27,7 +27,7 @@ The training is strictly partitioned to sequentially introduce complexity, ensur
     * **Parameter $\varepsilon$:** $\varepsilon$ remains fixed. Only network weights are updated.
 * **Phase 3: Inverse Parameter Solve** (Iterations $50,000$ to $120,000$).
     * **Goal:** Simultaneously solve the parameter inverse problem.
-    * **Action:** The control parameter $\varepsilon$ is **unfrozen and updated** alongside the network weights, minimizing both data and full PDE residuals.
+    * **Action:** The control parameter $\varepsilon$ is **unfrozen and updated** alongside the network weights, minimising both data and full PDE residuals.
 
 ### 3. GradNorm Loss Weighting
 
@@ -58,10 +58,10 @@ To calculate the PDE residual, the $4^{th}$ order equation is rewritten as two c
 
 ## Datasets and Data Handling
 
-Pattern inputs are loaded from disk (`.npy` or image files), normalized, and then used to train the PINN.
+Pattern inputs are loaded from disk (`.npy` or image files), normalised, and then used to train the PINN.
 
 * **Pattern Input:** A $64 \times 64$ grid of the pattern amplitude $u(x, y)$.
-* **Data Preprocessing:** The `load_pattern_array` utility automatically loads, resizes, and normalizes the input pattern to the standard range $[-1, 1]$.
+* **Data Preprocessing:** The `load_pattern_array` utility automatically loads, resizes, and normalises the input pattern to the standard range $[-1, 1]$.
 
 ---
 
