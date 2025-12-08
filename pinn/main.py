@@ -2,9 +2,9 @@ import logging
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
-import cv2  # Still needed for resizing
+import cv2  
 import time
-from models import RBF_PINNs # Assumes you are using the corresponding models.py
+from models import RBF_PINNs 
 from training import PINNPostProcessor
 import tensorflow as tf
 import os
@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 L_DOMAIN = 16 * np.pi          # Physical domain size
-n = 64                       # Grid resolution (64x64)
+n = 64                         # Grid resolution (64x64)
 dx = L_DOMAIN / (n - 1)        # Grid spacing
 
 MODEL_CONFIG = {
@@ -38,7 +38,7 @@ MODEL_CONFIG = {
     'sigma2': 2,
     'tol': 1e-7,
 }
-
+#These are only needed for plots if you know the true values of the system
 C_ORIGINAL = [0.05, 0.406, 0.196]
 
 def load_pattern_array(path: Union[str, Path], n: int = None):
@@ -52,27 +52,23 @@ def load_pattern_array(path: Union[str, Path], n: int = None):
 
     ext = path.suffix.lower()
 
-    # --- NPY LOADING ---
     if ext == ".npy":
         u_tp = np.load(str(path)).astype(float)
-        # Assuming .npy files are already normalized or will be handled separately
-        # If they are not normalized, you would apply the [-1, 1] scaling here too.
 
-    # --- IMAGE LOADING (.png, .jpg, etc.) ---
     elif ext in [".png", ".jpg", ".jpeg", ".jpf", ".jfif", ".bmp", ".tiff"]:
-        # Use cv2.IMREAD_GRAYSCALE to get a single channel
+        #Use cv2.IMREAD_GRAYSCALE to get a single channel
         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if img is None:
             raise ValueError(f"Failed to load image: {path}")
         u_tp = img.astype(float)
 
-        # Normalise to [-1, 1]
+        #Normalise to [-1, 1]
         u_min = u_tp.min()
         u_max = u_tp.max()
         if u_max != u_min:
             u_tp = 2 * ((u_tp - u_min) / (u_max - u_min)) - 1
         else:
-            # Handle case where image is uniform (all pixels the same)
+        #Handle case where image is uniform (all pixels the same)
             u_tp = np.zeros_like(u_tp)
             logger.warning("Image is uniform; normalized to 0.0.")
 
@@ -92,9 +88,6 @@ def load_pattern_array(path: Union[str, Path], n: int = None):
 def plot_pattern(u_tp: np.ndarray, title: str = "Loaded and Normalized Pattern"):
     """Displays the loaded and resized pattern array for verification."""
     plt.figure(figsize=(6, 6))
-    # Use 'RdBu_r' (Red-Blue, reversed) which is a common colormap for 
-    # data centered around zero, setting min/max to the normalized range [-1, 1]
-    # to clearly show the range.
     im = plt.imshow(u_tp, cmap='RdBu_r', vmin=-1.0, vmax=1.0)
     
     # Add colorbar for clarity
@@ -121,8 +114,8 @@ def main():
 
     x_phys, y_phys, dx = get_physical_grid(L_DOMAIN, n)
 
-    # NOTE: You MUST update this path to point to your actual image file.
-    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/hexagons.npy")
+    #Update this path to point to your actual data file.
+    data_path = Path("C:/Users/Zach Mollatt/Documents/Git/SwiftHohenberg-Inverse-Pinn/data/stripes.npy")
     
     try:
         u_tp = load_pattern_array(data_path, n=n)
@@ -133,9 +126,9 @@ def main():
             "Please fix the path or provide the file."
         )
 
-    # --- NEW: Visualize the loaded and resized pattern ---
+    #Visualise the loaded
     plot_pattern(u_tp, title=f"Input Pattern u({n}x{n}) Normalized to [-1, 1]")
-    # ----------------------------------------------------
+
 
     config = MODEL_CONFIG.copy()
     config.update({
