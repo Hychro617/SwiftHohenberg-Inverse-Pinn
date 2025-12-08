@@ -1,9 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.integrate import odeint
 from layers import RBFLayer
-from tensorflow.keras import backend as K
 from collections import deque
 
 print("\n*** SUCCESSFULLY LOADED RBF SS MODEL (V4 - GRAD NORM) ***\n")
@@ -26,7 +24,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
     ):
         super().__init__()
 
-        # --- Parameters & Grid Setup ---
+        #Parameters & Grid Setup
         self.min_lr = min_lr
         self.max_lr = max_lr
         self.units = units
@@ -36,20 +34,21 @@ class RBF_PINNs(tf.keras.layers.Layer):
         self.epochs = 0
         self.iterations = 0
         
-        # --- GradNorm Parameters ---
+        #  GradNorm Parameters
         self.alpha = alpha  # Asymmetry parameter
         self.lr_weights = 0.025  # Learning rate for weight updates (from paper)
-        self.weight_update_frequency = 100  # How often to update weights
+        self.weight_update_frequency = 100
         
-        # --- Initial Loss Tracking ---
+        #Initial Loss Tracking
         self.initial_loss_u = None
         self.initial_loss_pde1 = None  
         self.initial_loss_pde2 = None
         self.initial_losses_set = False
 
-        # --- Rest of your existing initialization ---
+        #Rest of your existing initialization
         self.threshold_p1 = threshold_ep
         self.threshold_p2 = threshold_ep + 30000
+        
         
         # Physical Parameters
         self.epsilon = tf.Variable([0.5], dtype=tf.float32, trainable=True)
@@ -63,6 +62,11 @@ class RBF_PINNs(tf.keras.layers.Layer):
         X_np, Y_np = np.meshgrid(x, y)
         self.tot_len = len(X_np.flatten())
         self.u_scale = float(np.mean(u.flatten()**2)) 
+
+        #Batch Selection
+        self.permutation = np.arange(self.tot_len)
+        np.random.shuffle(self.permutation)
+        self.current_idx = 0
 
         self.X = tf.constant(X_np.flatten()[:, None], dtype=tf.float32)
         self.Y = tf.constant(Y_np.flatten()[:, None], dtype=tf.float32)
@@ -266,11 +270,17 @@ class RBF_PINNs(tf.keras.layers.Layer):
         return u_pred, p_pred, pde_residual_1, full_sh_residual
 
     def create_batch(self, batch_size):
-        """Samples a batch from the steady-state data."""
-        indices = np.random.choice(self.tot_len, batch_size, replace=True)
-        x_batch = tf.gather(self.X, indices)
-        y_batch = tf.gather(self.Y, indices)
-        u_batch = tf.gather(self.u, indices)
+        if self.current_idx + batch_size > self.tot_len:
+            # Start a new epoch
+            np.random.shuffle(self.permutation)
+            self.current_idx = 0
+
+        batch_indices = self.permutation[self.current_idx:self.current_idx + batch_size]
+        self.current_idx += batch_size
+
+        x_batch = tf.gather(self.X, batch_indices)
+        y_batch = tf.gather(self.Y, batch_indices)
+        u_batch = tf.gather(self.u, batch_indices)
         return x_batch, y_batch, u_batch
 
     @tf.function
@@ -342,10 +352,12 @@ class RBF_PINNs(tf.keras.layers.Layer):
         self.optimizer.apply_gradients(zip(net_grads, self.model_up.trainable_variables))
         
         # Update epsilon
-        eps_grads = tape.gradient(total_loss, [self.epsilon])
-        self.optimizer_eps.apply_gradients(zip(eps_grads, [self.epsilon]))
+    
+        param_grads = tape.gradient(total_loss, [self.epsilon, self.delta, self.gamma])
+        self.optimizer_eps.apply_gradients(zip(param_grads, [self.epsilon, self.delta, self.gamma]))
         self.epsilon.assign(tf.clip_by_value(self.epsilon, 0.0, 1.0))
-        
+        self.delta.assign(tf.clip_by_value(self.delta, 0.0, 1.0))
+        self.gamma.assign(tf.clip_by_value(self.gamma, 0.0, 1.0))
         del tape
         return total_loss, loss_data, loss_pde1, loss_pde2, gradnorm_data, gradnorm_pde1, gradnorm_pde2
   
@@ -377,7 +389,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
 
             # Check if we need to disable CLR cycling at iteration 80000
             if self.iterations == 80000:
-                tf.print("--- DISABLING CLR CYCLING: SWITCHING TO CONSTANT LR ---")
+                tf.print("Constant LR Implemented")
                 clr_cb = CyclicLR(
                     model_optimizer=self, 
                     base_lr=self.min_lr, 
@@ -396,7 +408,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
 
             elif self.iterations < self.threshold_p2:
                 if self.iterations == self.threshold_p1:
-                    tf.print("--- SWITCHING TO PHASE 2 (CONSTRAINT-FIT) ---")
+                    tf.print("Phase 2 Active")
 
                 x_batch, y_batch, u_batch = self.create_batch(self.batchsize)
                 total_loss_t, loss_u_t, loss_pde1_t, g_u_t, g_p1_t = self.train_step_p2(x_batch, y_batch, u_batch)
@@ -406,7 +418,7 @@ class RBF_PINNs(tf.keras.layers.Layer):
 
             else:
                 if not phase_3_weights_set:
-                    tf.print("--- SWITCHING TO PHASE 3 (INVERSE SOLVE) ---")
+                    tf.print("Phase 3 Active")
                     phase_3_weights_set = True
 
                 x_batch, y_batch, u_batch = self.create_batch(self.batchsize)
@@ -433,9 +445,6 @@ class RBF_PINNs(tf.keras.layers.Layer):
             loss_pde2 = tf.constant(0.0)
 
         current_eps_lr = float(self.current_eps_lr)
-        
-        # *** FIX: Get the ACTUAL network learning rate from the optimizer ***
-        current_net_lr = float(self.optimizer.learning_rate.numpy())
 
         if self.iterations % 50 == 0:
             self._loss_array.append(float(loss.numpy()))
@@ -452,10 +461,8 @@ class RBF_PINNs(tf.keras.layers.Layer):
             self._weight_data_array.append(float(self.weight_data.numpy()))
             self._weight_pde1_array.append(float(self.weight_pde1.numpy()))
             self._weight_pde2_array.append(float(self.weight_pde2.numpy()))
-            self._gradnorm_u_array.append(float(gradnorm_u.numpy()) if gradnorm_u is not None else 0.0)
-            self._gradnorm_pde1_array.append(float(gradnorm_pde1.numpy()) if gradnorm_pde1 is not None else 0.0)
-            self._gradnorm_pde2_array.append(float(gradnorm_pde2.numpy()) if gradnorm_pde2 is not None else 0.0)
             total = self.weight_data + self.weight_pde1 + self.weight_pde2 + 1e-8
+            
             self._weight_frac_data.append(float(self.weight_data.numpy() / total.numpy()))
             self._weight_frac_pde1.append(float(self.weight_pde1.numpy() / total.numpy()))
             self._weight_frac_pde2.append(float(self.weight_pde2.numpy() / total.numpy()))
@@ -472,13 +479,14 @@ class RBF_PINNs(tf.keras.layers.Layer):
                       f"PDE1: {float(loss_pde1.numpy()):8.3e} | "
                       f"PDE2: {float(loss_pde2.numpy()):8.3e} | "
                       f"ε: {float(self.epsilon.numpy()[0]):.4f} | "
+                      f"delta: {float(self.delta.numpy()[0]):.4f} | "
+                      f"gamma: {float(self.gamma.numpy()[0]):.4f} | "
                       f"W: ({self.weight_data.numpy():.2f}, "
                       f"{self.weight_pde1.numpy():.2f}, "
                       f"{self.weight_pde2.numpy():.2f}) | "
                       f"LR: {float(self.optimizer.learning_rate.numpy()):.2e} | ")
             
-            
-    # --- Additional property methods for weight history ---
+        
     @property
     def weight_data_array(self):
         return self._weight_data_array
