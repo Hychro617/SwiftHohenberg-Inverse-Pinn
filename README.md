@@ -1,62 +1,88 @@
-# Inverse Problems in Turing Patterns (IPTP)
+# Inverse Swift–Hohenberg PINN (IPTP)
 
-This repository contains the code for the paper:  
-> *“Unraveling biochemical spatial patterns: machine learning approaches to the inverse problem of stationary Turing patterns.”*
+This repository contains a **Physics-Informed Neural Network (PINN)** implementation to solve the **inverse problem** for the **Swift–Hohenberg (SH) equation**, specifically calculating the control parameter $\varepsilon$ from digitally generated spatial patterns.
 
-The framework provides machine learning–based methods for solving inverse problems associated with stationary Turing patterns, focusing on identifying system parameters that give rise to observed spatial structures.
-
----
-
-## Overview
-
-The paper explores the use of **Physics-Informed Neural Networks (PINNs)** and **Radial Basis Function (RBF) networks** to infer parameters of reaction–diffusion systems that produce characteristic Turing-type spatial patterns.  
-
-This adaptation extends the original formulation to study the **Swift–Hohenberg equation**, a canonical model for spatial pattern formation and bifurcation analysis.
-
-### Swift–Hohenberg Equation
-
-$$
-\frac{\partial u}{\partial t} = \varepsilon u - (1 + \nabla^2)^2 u - u^3
-$$
-
-where:
-
-- `u(x, t)`: order parameter (scalar field)  
-- `ε`: bifurcation or control parameter (learned by the network)  
-- `∇²`: Laplacian operator  
-- The nonlinear term `-u³` stabilises the emergent pattern amplitudes  
-
-In this adaptation:
-- **δ** and **γ** are fixed constants.  
-- **ε (epsilon)** is the sole trainable parameter optimised to reproduce the observed steady-state patterns.
+The methodology is detailed in the paper:
+“Unraveling biochemical spatial patterns: machine learning approaches to the inverse problem of stationary Turing patterns.”
 
 ---
 
-## Datasets
+## Technical Overview and Innovation
 
-All datasets are generated **within the code** using forward simulations of the Swift–Hohenberg equation.  
+The framework's core strength lies in its specialized architecture and **robust 3-Phase Training Strategy** coupled with **GradNorm dynamic loss weighting** to stabilize the inverse parameter solve.
 
-- Initial conditions are generated as small perturbations around a homogeneous state.  
-- Steady-state patterns are obtained by numerically integrating the PDE over time.  
-- These generated patterns are then used to train the PINN to infer ε.
+### 1. RBF-Based PINN Architecture
 
-This approach allows full control over the data and ensures reproducibility of both numerical and synthetic experiments.
+This implementation utilizes a **Radial Basis Function (RBF) Neural Network** to approximate the pattern field $u(x, y)$, rather than a traditional Multi-Layer Perceptron (MLP). The RBF architecture is chosen for its ability to produce **smoother spatial derivatives**, which is beneficial when enforcing the physics constraints of a Partial Differential Equation (PDE).
+
+### 2. The 3-Phase Training Strategy
+
+The training is strictly partitioned to sequentially introduce complexity, ensuring accurate function approximation before attempting parameter inversion.
+
+* **Phase 1: Pure Data Fit** (Iterations $0$ to $20,000$).
+    * **Goal:** The network is trained solely on the input pattern data, $u(x, y)$, to accurately approximate the observed steady-state pattern.
+    * **Loss:** $\lambda_{\text{PDE}} = 0$ (Physics constraints are ignored).
+* **Phase 2: Physics-Constrained Fit** (Iterations $20,000$ to $50,000$).
+    * **Goal:** Introduce the PDE constraints to make the network's internal representation physically consistent.
+    * **Parameter $\varepsilon$:** $\varepsilon$ remains fixed. Only network weights are updated.
+* **Phase 3: Inverse Parameter Solve** (Iterations $50,000$ to $120,000$).
+    * **Goal:** Simultaneously solve the parameter inverse problem.
+    * **Action:** The control parameter $\varepsilon$ is **unfrozen and updated** alongside the network weights, minimizing both data and full PDE residuals.
+
+### 3. GradNorm Loss Weighting
+
+To dynamically balance the influence of the multiple loss components (data loss $L_u$, and two PDE residuals $L_{\text{PDE1}}$, $L_{\text{PDE2}}$), the network implements the **GradNorm algorithm**.
+
+This technique automatically adjusts the loss weights ($\lambda_i$) based on the magnitude of the gradients with respect to the network parameters, preventing any single loss term from dominating or stalling training.
+
+---
+
+## Swift–Hohenberg Equation (SH)
+
+The target system is the canonical $4^{th}$ order SH equation, simplified to its **steady-state approximation**:
+
+$$\frac{\partial u}{\partial t} = \varepsilon u - (1 + \nabla^2)^2 u - u^3 \approx 0$$
+
+To calculate the PDE residual, the $4^{th}$ order equation is rewritten as two coupled $2^{nd}$ order equations, requiring the PINN to predict two fields: $u$ and an auxiliary variable $p$:
+
+1.  $$p = \nabla^2 u$$ (Physics Constraint 1: Defining the auxiliary variable $p$)
+2.  $$0 = \varepsilon u - p - \nabla^2 p - u^3$$ (Physics Constraint 2: Simplified steady-state SH residual)
+
+| Parameter | Role in PINN | Value (Training) |
+| :--- | :--- | :--- |
+| $\varepsilon$ (Epsilon) | Trainable (Phase 3 only) | Starts at $\approx 0.5$ |
+| $\delta$ (Delta) | Fixed Constant | $0.406$ |
+| $\gamma$ (Gamma) | Fixed Constant | $0.196$ |
+
+---
+
+## Datasets and Data Handling
+
+Pattern inputs are loaded from disk (`.npy` or image files), normalized, and then used to train the PINN.
+
+* **Pattern Input:** A $64 \times 64$ grid of the pattern amplitude $u(x, y)$.
+* **Data Preprocessing:** The `load_pattern_array` utility automatically loads, resizes, and normalizes the input pattern to the standard range $[-1, 1]$.
 
 ---
 
 ## Requirements
 
-| Library | Version |
-|---------|---------|
-| Python | 3.10.11 |
-| TensorFlow | 2.13.0 |
-| NumPy | 1.24.3 |
-| Matplotlib | 3.7.2 |
-| SciPy | 1.11.1 |
-| OpenCV | 4.8.1.78 |
-| Shapely | 2.0.3 |
+The analysis and training code requires the following Python environment and library versions. **Note that these specific versions are critical for TensorFlow stability and reproducibility.**
 
-Install dependencies via:
+| Library | Version |
+| :--- | :--- |
+| Python | $3.9.16$ |
+| TensorFlow | $2.11.0$ |
+| NumPy | $1.22.1$ |
+| Matplotlib | $3.8.4$ |
+| SciPy | $1.9.3$ |
+| opencv-python | $4.9.0.80$ |
+| Shapely | $2.0.3$ |
+
+---
+## Installation
+
+Install all dependencies via a `requirements.txt` file by running the following command:
 
 ```bash
 pip install -r requirements.txt
